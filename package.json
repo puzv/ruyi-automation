@@ -1,0 +1,21 @@
+{
+  "name": "playwright-upload",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "move": "node move.js",
+    "upload": "node uploadAll.js",
+    "create": "node createAllGroup.js",
+    "analyse": "node analyseAll.js",
+    "download": "node downloadAll.js",
+    "test": "node --check config.js && node --check createAllGroup.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "playwright": "^1.62.1"
+  }
+}

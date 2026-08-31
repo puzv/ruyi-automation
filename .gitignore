@@ -1,0 +1,14 @@
+auth.json
+chrome-profile/
+node_modules/
+web/node_modules/
+ruyi-profile/
+upload/result/
+upload/conclusion/
+upload/raw/
+upload/idfa/
+upload/oaid/
+upload/*.json
+.DS_Store
+*.log
+.env
