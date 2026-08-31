@@ -3,12 +3,18 @@ chrome-profile/
 node_modules/
 web/node_modules/
 ruyi-profile/
-upload/result/
 upload/conclusion/
-upload/raw/
-upload/idfa/
-upload/oaid/
 upload/*.json
 .DS_Store
 *.log
 .env
+
+# Keep the runtime directory layout in source archives, but never commit data files.
+upload/raw/*
+!upload/raw/.gitkeep
+upload/idfa/*
+!upload/idfa/.gitkeep
+upload/oaid/*
+!upload/oaid/.gitkeep
+upload/result/*
+!upload/result/.gitkeep
