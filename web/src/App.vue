@@ -115,12 +115,20 @@ async function detectCurrentStatus() {
 async function importFolder(event) {
   const files = [...event.target.files]
   if (!files.length) return
+  const eligibleFiles = files.filter((file) => /(?:idfa|oaid)/i.test(file.name) && /\.(?:txt|csv)$/i.test(file.name))
+  if (!eligibleFiles.length) {
+    notice.value = '未找到符合条件的文件（文件名需含 idfa 或 oaid，格式为 .txt 或 .csv）'
+    event.target.value = ''
+    return
+  }
   const form = new FormData()
-  files.forEach((file) => form.append('files', file, file.webkitRelativePath || file.name))
-  notice.value = `正在导入 ${files.length} 个文件...`
+  eligibleFiles.forEach((file) => form.append('files', file, file.webkitRelativePath || file.name))
+  notice.value = `正在导入 ${eligibleFiles.length} 个符合条件的文件...`
   const response = await fetch('/api/import-folder', { method: 'POST', body: form })
   const data = await response.json()
-  notice.value = data.ok ? `已导入 ${data.count} 个文件到 raw/` : `导入失败：${data.message}`
+  notice.value = data.ok
+    ? `已导入 ${data.count} 个文件到 raw/${data.skipped ? `，跳过 ${data.skipped} 个不符合条件的文件` : ''}`
+    : `导入失败：${data.message}`
   event.target.value = ''
 }
 async function runTask(label) {
@@ -179,7 +187,7 @@ async function pollJob(label) {
             <span class="mode-option" :class="{ selected: !headlessMode }"><Monitor :size="16" /><span>调试模式</span></span>
             <span class="mode-option" :class="{ selected: headlessMode }"><MonitorOff :size="16" /><span>后台模式</span></span>
           </button>
-          <button class="help-button" type="button" aria-label="帮助"><CircleHelp :size="18" /><span>使用帮助</span></button>
+          <a class="help-button" href="https://cf.ge.cn/pages/viewpage.action?pageId=289808671" target="_blank" rel="noopener noreferrer" aria-label="帮助"><CircleHelp :size="18" /><span>使用帮助</span></a>
         </div>
       </header>
       <input ref="folderInput" class="visually-hidden" type="file" webkitdirectory directory multiple @change="importFolder" />

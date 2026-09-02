@@ -269,15 +269,22 @@ function apiPlugin() {
         try {
           const rawDir = path.resolve(uploadRoot, 'raw')
           fs.mkdirSync(rawDir, { recursive: true })
+          let count = 0
+          let skipped = 0
           for (const file of req.files || []) {
             const relative = decodeUploadedFileName(file.originalname || file.filename).replace(/^[/\\]+/, '')
-            if (path.basename(relative).startsWith('.')) continue
-            const target = path.resolve(rawDir, path.basename(relative))
+            const fileName = path.basename(relative)
+            if (fileName.startsWith('.') || !/(?:idfa|oaid)/i.test(fileName) || !/\.(?:txt|csv)$/i.test(fileName)) {
+              skipped += 1
+              continue
+            }
+            const target = path.resolve(rawDir, fileName)
             if (!target.startsWith(`${rawDir}${path.sep}`)) throw new Error('非法文件路径')
             if (fs.existsSync(target)) throw new Error(`文件已存在，不会覆盖：${path.basename(target)}`)
             fs.writeFileSync(target, file.buffer)
+            count += 1
           }
-          res.json({ ok: true, count: (req.files || []).length })
+          res.json({ ok: true, count, skipped })
         } catch (error) { res.status(400).json({ ok: false, message: error.message }) }
       })
       api.post('/api/run/:task', (req, res) => {
