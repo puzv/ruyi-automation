@@ -7,7 +7,7 @@ const { readJsonArray } = require("./lib/files");
 const { checkPreflight } = require("./lib/preflight");
 
 function getPending(uploadRoot) {
-  const todoPath = path.join(uploadRoot, "analysetodolist.json");
+  const todoPath = path.join(uploadRoot, "analyseToDoList.json");
   if (!fs.existsSync(todoPath)) throw new Error(`找不到分析任务清单：${todoPath}`);
   const done = new Set(readJsonArray(path.join(uploadRoot, "done.json"), "完成清单")
     .filter((name) => typeof name === "string")
@@ -32,7 +32,7 @@ function runAnalyse() {
 }
 
 function main() {
-  checkPreflight({ taskFiles: ["analysetodolist.json", "done.json"] });
+  checkPreflight({ taskFiles: ["analyseToDoList.json", "done.json"] });
   const uploadRoot = requireUploadRoot();
 
   let pending = getPending(uploadRoot);
@@ -46,9 +46,9 @@ function main() {
     const completed = runAnalyse();
     const remaining = getPending(uploadRoot);
     if (!completed && remaining.length === before) {
-      const todo = readJsonArray(path.join(uploadRoot, "analysetodolist.json"), "分析任务清单");
+      const todo = readJsonArray(path.join(uploadRoot, "analyseToDoList.json"), "分析任务清单");
       if (todo.length > 1) todo.push(todo.shift());
-      fs.writeFileSync(path.join(uploadRoot, "analysetodolist.json"), `${JSON.stringify(todo, null, 2)}\n`, "utf8");
+      fs.writeFileSync(path.join(uploadRoot, "analyseToDoList.json"), `${JSON.stringify(todo, null, 2)}\n`, "utf8");
       stalled += 1;
       if (stalled >= todo.length) {
         console.log("连续一轮分析任务均未就绪，暂时停止，保留分析任务清单供下次重试。");

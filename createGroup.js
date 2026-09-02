@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
 const { chromium } = require("playwright");
-const { profileDir, chromePath, uploadRootCandidates, urls } = require("./config");
+const { profileDir, chromePath, uploadRootCandidates, urls, browserHeadless } = require("./config");
 const { requireUploadRoot } = require("./lib/paths");
 const { readJsonArray, writeJsonArray } = require("./lib/files");
 const { launchBrowser } = require("./lib/browser");
@@ -37,12 +37,8 @@ function readNextFileName(uploadRoot) {
 
   const todo = readJsonArray(todoPath, "创建任务清单");
 
-  const analysePath = path.join(uploadRoot, "analysetodolist.json");
-  const legacyAnalysePath = path.join(uploadRoot, "analyseToDoList.json");
-  const analysed = [...new Set([
-    ...readJsonArray(analysePath, "分析任务清单"),
-    ...readJsonArray(legacyAnalysePath, "分析任务清单"),
-  ])];
+  const analysePath = path.join(uploadRoot, "analyseToDoList.json");
+  const analysed = readJsonArray(analysePath, "分析任务清单");
 
   const analysedSet = new Set(analysed.filter((name) => typeof name === "string").map(withoutExtension));
   const fileName = todo.find((name) => (
@@ -177,7 +173,7 @@ function displayedNameForLog(requestedName, nameWithoutExtension) {
 }
 
 async function main() {
-  checkPreflight({ taskFiles: ["createGroupToDoList.json", "creategrouptodolist.json", "analysetodolist.json", "analyseToDoList.json"] });
+  checkPreflight({ taskFiles: ["createGroupToDoList.json", "creategrouptodolist.json", "analyseToDoList.json"] });
   const uploadRoot = getUploadRoot();
   const { fileName, todoPath, analysePath, analysed } = readNextFileName(uploadRoot);
   const groupType = getGroupType(fileName);
@@ -194,6 +190,9 @@ async function main() {
     const url = groupUrls[groupType];
     await page.goto(url, { waitUntil: "domcontentloaded" });
     if (!page.url().includes("/audience/dnUpload")) {
+      if (browserHeadless) {
+        throw new Error("当前未登录或未进入人群文件页面；无头模式无法进行人工登录，请先用可视模式登录后再重试。");
+      }
       await waitForEnter("请完成登录并进入人群文件页面后按回车继续：");
       await page.goto(url, { waitUntil: "domcontentloaded" });
     }

@@ -42,9 +42,12 @@ node downloadAll.js
 RUYI_UPLOAD_DIR="/path/to/upload" \\
 RUYI_PROFILE_DIR="/path/to/profile" \\
 RUYI_CHROME_PATH="/path/to/chrome" \\
+RUYI_HEADLESS=1 \\
 RUYI_AUDIENCE_LIMIT=480 \\
 node createAllGroup.js
 ```
+
+所有浏览器流程默认以可视模式运行。登录状态已经保存在 `ruyi-profile` 后，可设置 `RUYI_HEADLESS=1`（也接受 `true`/`yes`/`on`）后台运行，不再打开网页窗口。无头模式无法处理登录、验证码或二次认证；遇到登录失效时，请先取消该变量，用可视模式完成登录后再切回无头模式。
 
 业务 URL 也可通过 `RUYI_URL_*` 环境变量覆盖，具体名称见 `config.js`。
 

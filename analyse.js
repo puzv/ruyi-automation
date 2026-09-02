@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
 const { chromium } = require("playwright");
-const { profileDir, chromePath, uploadRootCandidates, urls } = require("./config");
+const { profileDir, chromePath, uploadRootCandidates, urls, browserHeadless } = require("./config");
 const { requireUploadRoot } = require("./lib/paths");
 const { readJsonArray, writeJsonArray } = require("./lib/files");
 const { launchBrowser } = require("./lib/browser");
@@ -13,7 +13,7 @@ function withoutExtension(fileName) {
 }
 
 function resolveTask(uploadRoot) {
-  const listPath = path.join(uploadRoot, "analysetodolist.json");
+  const listPath = path.join(uploadRoot, "analyseToDoList.json");
   if (!fs.existsSync(listPath)) {
     throw new Error(`找不到分析任务清单：${listPath}`);
   }
@@ -61,7 +61,10 @@ async function selectAudience(page, fileName) {
   const normalize = (value) => value.replace(/\s+/g, " ").trim();
   const candidates = new Set([normalize(requested), normalize(stem)]);
 
-  const trigger = page.getByText("请选择", { exact: true }).first();
+  const placeholder = page.getByText("请选择", { exact: true }).first();
+  const trigger = await placeholder.isVisible().catch(() => false)
+    ? placeholder
+    : page.locator(".ndmp-audience-select:visible").first();
   await trigger.waitFor({ state: "visible", timeout: 30000 });
   await trigger.click();
 
@@ -78,7 +81,11 @@ async function selectAudience(page, fileName) {
   const displayed = [];
   for (let i = 0; i < await rows.count(); i += 1) {
     const row = rows.nth(i);
-    const name = normalize(await row.locator(".audience-name").first().getAttribute("title"));
+    const nameNode = row.locator(".audience-name").first();
+    const name = normalize(
+      (await nameNode.getAttribute("title").catch(() => "")) ||
+      (await nameNode.innerText().catch(() => "")),
+    );
     displayed.push(name);
     if (!candidates.has(name)) continue;
     const state = normalize([
@@ -95,8 +102,13 @@ async function selectAudience(page, fileName) {
   }
   if (!match) throw new Error(`下拉列表中找不到“${requested}”（搜索结果：${displayed.join("、")}）`);
   await match.click();
-  const selectedText = normalize(await trigger.innerText().catch(() => ""));
-  if (!candidates.has(selectedText) && !selectedText.includes(stem)) {
+  await page.waitForTimeout(300);
+  const selectedControl = page.locator(".ndmp-audience-select:visible").first();
+  const selectedText = normalize(
+    (await selectedControl.locator(".selection-single-text").innerText().catch(() => "")) ||
+    (await selectedControl.innerText().catch(() => "")),
+  );
+  if (!candidates.has(selectedText) && !selectedText.includes(stem) && !selectedText.includes(requested)) {
     throw new Error(`人群包“${requested}”未成功选中，已停止提交以避免创建空洞悉任务`);
   }
   console.log(`已选中人群包：${requested}${requested === stem ? "" : `（页面名称：${stem}）`}`);
@@ -131,10 +143,26 @@ async function fillTaskName(page, fileName) {
 async function selectFilterTag(page, filterName, tagName) {
   const title = page.getByText(filterName, { exact: true }).first();
   await title.waitFor({ state: "visible", timeout: 30000 });
-  const filter = title.locator("..");
-  const tag = filter.locator(".tags-third", { hasText: tagName }).filter({ hasText: new RegExp(`^${tagName}$`) }).first();
+  let filter = title.locator("..");
+  let tag = null;
+  // 页面版本变化时，标签可能位于标题的父级或祖父级容器中。
+  for (let level = 0; level < 3 && !tag; level += 1) {
+    const candidate = filter.locator(".tags-third:visible").filter({ hasText: tagName }).first();
+    if (await candidate.count()) {
+      tag = candidate;
+      break;
+    }
+    const textCandidate = filter.getByText(tagName, { exact: true }).first();
+    if (await textCandidate.count() && await textCandidate.isVisible().catch(() => false)) {
+      tag = textCandidate;
+      break;
+    }
+    filter = filter.locator("..");
+  }
+  if (!tag) throw new Error(`找不到${filterName}中的选项：${tagName}`);
   await tag.waitFor({ state: "visible", timeout: 30000 });
   await tag.click();
+  await page.waitForTimeout(250);
   console.log(`已选择${filterName}：${tagName}`);
 }
 
@@ -149,7 +177,10 @@ async function selectInsightFilters(page) {
 }
 
 async function submitInsight(page) {
-  const submit = page.getByRole("button", { name: "提交", exact: true }).last();
+  const namedSubmit = page.getByRole("button", { name: "提交", exact: true }).last();
+  const submit = await namedSubmit.isVisible().catch(() => false)
+    ? namedSubmit
+    : page.locator('button[type="submit"]:visible').last();
   await submit.waitFor({ state: "visible", timeout: 30000 });
   const deadline = Date.now() + 30000;
   while (!(await submit.isEnabled().catch(() => false))) {
@@ -157,20 +188,32 @@ async function submitInsight(page) {
     await page.waitForTimeout(200);
   }
 
-  await Promise.all([
-    page.waitForURL((url) => (
-      url.pathname.startsWith("/audience-profile/result")
-      || url.pathname === "/insight/insight"
-    ), {
-      timeout: 60000,
-    }),
-    submit.click(),
-  ]);
-  console.log(`提交成功，已跳转：${page.url()}`);
+  const createResponse = page.waitForResponse(
+    (response) => response.url().includes("/api/insight/create") && response.request().method() === "POST",
+    { timeout: 60000 },
+  ).catch(() => null);
+  await submit.click();
+  const response = await createResponse;
+  let responseBody = null;
+  if (response) responseBody = await response.json().catch(() => null);
+  const navigationDeadline = Date.now() + 10000;
+  while (
+    !page.url().includes("/audience-profile/result")
+    && !page.url().endsWith("/insight/insight")
+    && Date.now() < navigationDeadline
+  ) {
+    await page.waitForTimeout(250);
+  }
+  const navigated = page.url().includes("/audience-profile/result") || page.url().endsWith("/insight/insight");
+  if (!navigated && !responseBody?.success) {
+    const errors = await page.locator('[role="alert"]:visible, .spaui-form-item-error:visible, .error:visible').allInnerTexts().catch(() => []);
+    throw new Error(`洞察提交后未跳转${errors.length ? `：${errors.join("；")}` : "，请检查必填项和筛选项"}`);
+  }
+  console.log(`提交成功${navigated ? `，已跳转：${page.url()}` : "（接口已确认成功）"}`);
 }
 
 async function main() {
-  checkPreflight({ taskFiles: ["analysetodolist.json", "done.json"] });
+  checkPreflight({ taskFiles: ["analyseToDoList.json", "done.json"] });
   const { fileName, donePath, listPath } = resolveTaskFromUpload();
   const context = await launchBrowser();
   try {
@@ -179,6 +222,9 @@ async function main() {
     await page.goto(urls.insightCreate, { waitUntil: "domcontentloaded", timeout: 60000 });
     await page.waitForTimeout(1500);
     if (!page.url().includes("/insight/create")) {
+      if (browserHeadless) {
+        throw new Error("当前未登录或未进入洞察创建页面；无头模式无法进行人工登录，请先用可视模式登录后再重试。");
+      }
       await waitForEnter("请完成登录并进入洞察创建页面后按回车继续：");
       await page.goto(urls.insightCreate, { waitUntil: "domcontentloaded" });
     }

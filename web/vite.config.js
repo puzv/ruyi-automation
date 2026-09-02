@@ -78,7 +78,7 @@ function getWorkspaceStatus() {
     : 0
   const createNames = readTaskItems(['createGroupToDoList.json', 'creategrouptodolist.json'])
   const createCount = readFirstTaskCount(['createGroupToDoList.json', 'creategrouptodolist.json'])
-  const analyseCount = readTaskCount('analysetodolist.json')
+  const analyseCount = readTaskCount('analyseToDoList.json')
   const doneCount = readTaskCount('done.json')
   const workspaceStatus = createCount > 0 ? '等待创建人群包' : analyseCount > 0 ? '等待洞悉人群包' : doneCount > 0 ? '等待下载' : '等待操作'
   return { workspaceStatus, rawCount, createCount, createNames, analyseCount, doneCount }
@@ -237,7 +237,7 @@ function apiPlugin() {
       api.get('/api/status', (_req, res) => res.json({ ok: true, ...getWorkspaceStatus() }))
       api.get('/api/platform-status', async (_req, res) => {
         const names = readTaskItems(['createGroupToDoList.json', 'creategrouptodolist.json'])
-        const analyseNames = readTaskItems(['analysetodolist.json'])
+        const analyseNames = readTaskItems(['analyseToDoList.json'])
         const doneNames = readTaskItems(['done.json'])
         const groups = { idfa: names.filter((name) => /idfa/i.test(name)), oaid: names.filter((name) => /oaid/i.test(name)) }
         const result = { idfaPending: 0, oaidPending: 0, insightPending: 0, resultPending: 0 }

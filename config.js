@@ -48,6 +48,7 @@ function detectChromePath() {
 }
 
 const chromePath = process.env.RUYI_CHROME_PATH || detectChromePath();
+const browserHeadless = /^(1|true|yes|on)$/i.test(process.env.RUYI_HEADLESS || "");
 
 module.exports = {
   projectRoot,
@@ -55,6 +56,7 @@ module.exports = {
   uploadRootCandidates: [uploadRoot],
   profileDir,
   chromePath,
+  browserHeadless,
   resultDir: path.join(uploadRoot, "result"),
   resultDirCandidates: [path.join(uploadRoot, "result")],
   audienceLimit: Number(process.env.RUYI_AUDIENCE_LIMIT || 480),

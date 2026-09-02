@@ -122,7 +122,7 @@ function runScript(scriptName) {
 }
 
 function main() {
-  checkPreflight({ taskFiles: ["createGroupToDoList.json", "analysetodolist.json", "done.json"] });
+  checkPreflight({ taskFiles: ["createGroupToDoList.json", "analyseToDoList.json", "done.json"] });
   const uploadRoot = requireUploadRoot("upload");
 
   console.log("开始整理数据文件...");

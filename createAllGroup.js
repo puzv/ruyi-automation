@@ -74,7 +74,7 @@ async function inspectAudienceTotal() {
 }
 
 async function main() {
-  checkPreflight({ taskFiles: ["createGroupToDoList.json", "creategrouptodolist.json", "analysetodolist.json", "analyseToDoList.json", "done.json"] });
+  checkPreflight({ taskFiles: ["createGroupToDoList.json", "creategrouptodolist.json", "analyseToDoList.json", "done.json"] });
   const uploadRoot = findUploadRoot();
   if (!uploadRoot) {
     throw new Error(`找不到 upload 目录，请创建：${uploadRootCandidates.join(" 或 ")}`);
