@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
 const { chromium } = require("playwright");
-const { uploadRootCandidates, profileDir, chromePath, urls } = require("./config");
+const { uploadRootCandidates, profileDir, chromePath, urls, browserHeadless } = require("./config");
 const { requireUploadRoot } = require("./lib/paths");
 const { readJsonArray, writeJsonArray } = require("./lib/files");
 const { launchBrowser } = require("./lib/browser");
@@ -179,6 +179,9 @@ async function uploadFolder(page, config) {
     let pageReadyResponse = waitForScheme();
     await page.goto(config.importUrl, { waitUntil: "domcontentloaded" });
     if (!page.url().includes("/web/workbench/file/import")) {
+      if (browserHeadless) {
+        throw new Error("当前未登录或未进入文件导入页面；后台模式无法进行人工登录，请先用调试模式登录后再重试。");
+      }
       await pressEnter("请在数据平台页面完成登录，并进入文件导入页面；完成后按回车继续。");
       // 登录后重新导航，前一次等待的响应不再适用。
       pageReadyResponse = waitForScheme();
