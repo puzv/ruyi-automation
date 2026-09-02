@@ -59,7 +59,11 @@ function main() {
     }
     pending = remaining;
   }
-  console.log("分析任务清单中没有待处理文件，全部分析完成。");
+  if (pending.length === 0) {
+    console.log("分析任务清单中没有待处理文件，全部分析完成。");
+  } else {
+    console.log(`分析任务清单仍有 ${pending.length} 个任务未就绪，保留清单供稍后重试。`);
+  }
 }
 
 try {

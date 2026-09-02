@@ -2,7 +2,8 @@ auth.json
 chrome-profile/
 node_modules/
 web/node_modules/
-ruyi-profile/
+ruyi-profile/*
+!ruyi-profile/.gitkeep
 upload/conclusion/
 upload/*.json
 .DS_Store

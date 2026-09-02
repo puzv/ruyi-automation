@@ -77,13 +77,44 @@ async function selectAudience(page, fileName) {
   let match = null;
   const displayed = [];
   for (let i = 0; i < await rows.count(); i += 1) {
-    const name = normalize(await rows.nth(i).locator(".audience-name").first().getAttribute("title"));
+    const row = rows.nth(i);
+    const name = normalize(await row.locator(".audience-name").first().getAttribute("title"));
     displayed.push(name);
-    if (candidates.has(name)) { match = rows.nth(i); break; }
+    if (!candidates.has(name)) continue;
+    const state = normalize([
+      await row.innerText().catch(() => ""),
+      await row.getAttribute("class").catch(() => ""),
+      await row.getAttribute("aria-disabled").catch(() => ""),
+      await row.getAttribute("title").catch(() => ""),
+    ].join(" ")).toLowerCase();
+    if (/(计算中|处理中|生成中|processing|pending|disabled|不可用)/i.test(state)) {
+      throw new Error(`人群包“${requested}”正在计算中或暂不可用，已停止提交，请稍后重试`);
+    }
+    match = row;
+    break;
   }
   if (!match) throw new Error(`下拉列表中找不到“${requested}”（搜索结果：${displayed.join("、")}）`);
   await match.click();
+  const selectedText = normalize(await trigger.innerText().catch(() => ""));
+  if (!candidates.has(selectedText) && !selectedText.includes(stem)) {
+    throw new Error(`人群包“${requested}”未成功选中，已停止提交以避免创建空洞悉任务`);
+  }
   console.log(`已选中人群包：${requested}${requested === stem ? "" : `（页面名称：${stem}）`}`);
+}
+
+function monitorPage(page) {
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      console.log(`[页面${message.type()}] ${message.text()}`);
+    }
+  });
+  page.on("pageerror", (error) => console.log(`[页面异常] ${error.message}`));
+  page.on("requestfailed", (request) => {
+    console.log(`[请求失败] ${request.method()} ${request.url()}：${request.failure()?.errorText || "未知错误"}`);
+  });
+  page.on("response", (response) => {
+    if (response.status() >= 400) console.log(`[HTTP ${response.status()}] ${response.request().method()} ${response.url()}`);
+  });
 }
 
 async function fillTaskName(page, fileName) {
@@ -144,6 +175,7 @@ async function main() {
   const context = await launchBrowser();
   try {
     const page = context.pages()[0] || await context.newPage();
+    monitorPage(page);
     await page.goto(urls.insightCreate, { waitUntil: "domcontentloaded", timeout: 60000 });
     await page.waitForTimeout(1500);
     if (!page.url().includes("/insight/create")) {
@@ -162,5 +194,5 @@ async function main() {
 
 main().catch((error) => {
   console.error(`分析页面操作失败：${error.message}`);
-  process.exitCode = /找不到|不可用|没有待处理/.test(error.message) ? 2 : 1;
+  process.exitCode = /找不到|不可用|没有待处理|计算中|处理中|未成功选中|暂不可用/.test(error.message) ? 2 : 1;
 });
