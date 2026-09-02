@@ -11,6 +11,8 @@ import {
   FolderOpen,
   Layers3,
   ListChecks,
+  Monitor,
+  MonitorOff,
   RefreshCw,
   UsersRound,
 } from 'lucide-vue-next'
@@ -26,6 +28,8 @@ const jobLog = ref('')
 const createExpanded = ref(false)
 const insightExpanded = ref(false)
 const downloadExpanded = ref(false)
+const headlessMode = ref(false)
+const modeUpdating = ref(false)
 
 const actions = [
   { label: '选择文件夹', hint: '准备原始数据文件', icon: FolderOpen, tone: 'mint' },
@@ -57,7 +61,34 @@ async function refreshStatus() {
   const data = await response.json()
   if (data.ok) { workspaceStatus.value = data.workspaceStatus; statusCounts.value = { ...statusCounts.value, ...data } }
 }
-onMounted(refreshStatus)
+async function refreshRuntimeMode() {
+  const response = await fetch('/api/runtime-mode')
+  const data = await response.json()
+  if (data.ok) headlessMode.value = data.headless
+}
+async function toggleRuntimeMode() {
+  if (modeUpdating.value) return
+  modeUpdating.value = true
+  try {
+    const response = await fetch('/api/runtime-mode', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ headless: !headlessMode.value }),
+    })
+    const data = await response.json()
+    if (data.ok) {
+      headlessMode.value = data.headless
+      notice.value = data.headless ? '已切换为后台模式' : '已切换为调试模式'
+    } else {
+      notice.value = `模式切换失败：${data.message || '未知错误'}`
+    }
+  } catch (error) {
+    notice.value = `模式切换失败：${error.message || '无法连接本地服务'}`
+  } finally {
+    modeUpdating.value = false
+  }
+}
+onMounted(() => { refreshStatus(); refreshRuntimeMode() })
 function chooseFolder() { folderInput.value?.click() }
 async function detectCurrentStatus() {
   await refreshStatus()
@@ -143,7 +174,13 @@ async function pollJob(label) {
           <p class="eyebrow">DATA OPERATIONS / 01</p>
           <h1>操作面板</h1>
         </div>
-        <button class="help-button" type="button" aria-label="帮助"><CircleHelp :size="18" /><span>使用帮助</span></button>
+        <div class="topbar-actions">
+          <button class="mode-switch" :class="{ active: headlessMode }" type="button" :disabled="modeUpdating" :aria-checked="headlessMode" role="switch" :aria-label="headlessMode ? '后台模式，点击切换为调试模式' : '调试模式，点击切换为后台模式'" :title="headlessMode ? '点击切换为调试模式' : '点击切换为后台模式'" @click="toggleRuntimeMode">
+            <span class="mode-option" :class="{ selected: !headlessMode }"><Monitor :size="16" /><span>调试模式</span></span>
+            <span class="mode-option" :class="{ selected: headlessMode }"><MonitorOff :size="16" /><span>后台模式</span></span>
+          </button>
+          <button class="help-button" type="button" aria-label="帮助"><CircleHelp :size="18" /><span>使用帮助</span></button>
+        </div>
       </header>
       <input ref="folderInput" class="visually-hidden" type="file" webkitdirectory directory multiple @change="importFolder" />
 

@@ -13,6 +13,8 @@ const jobs = new Map()
 const uploadMiddleware = multer({ storage: multer.memoryStorage() })
 const require = createRequire(import.meta.url)
 const { launchBrowser } = require('../lib/browser.js')
+const { browserHeadless } = require('../config.js')
+let headlessMode = browserHeadless
 
 // multipart 的文件名在不同浏览器/版本中可能按 latin1 传入，
 // 例如 UTF-8 的“测试”会先变成“æµ‹è¯•”。写入磁盘前统一还原为 UTF-8。
@@ -85,12 +87,13 @@ function getWorkspaceStatus() {
 }
 
 function withoutExtension(name) { return path.basename(name).replace(/\.[^.]+$/, '') }
+function launchPlatformBrowser() { return launchBrowser({ headless: headlessMode }) }
 
 async function inspectPlatformFiles(type, names) {
   const url = type === 'idfa'
     ? 'https://ruyi.qq.com/audience/dnUpload?idType=MD5_IFA'
     : 'https://ruyi.qq.com/audience/dnUpload?idType=MD5_OAID'
-  const context = await launchBrowser()
+  const context = await launchPlatformBrowser()
   try {
     const page = context.pages()[0] || await context.newPage()
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 })
@@ -121,7 +124,7 @@ async function inspectPlatformFiles(type, names) {
 }
 
 async function inspectAnalyseAudience(names) {
-  const context = await launchBrowser()
+  const context = await launchPlatformBrowser()
   try {
     const page = context.pages()[0] || await context.newPage()
     await page.goto('https://ruyi.qq.com/audience', { waitUntil: 'domcontentloaded', timeout: 60000 })
@@ -158,7 +161,7 @@ async function inspectAnalyseAudience(names) {
 }
 
 async function inspectInsightResults(names) {
-  const context = await launchBrowser()
+  const context = await launchPlatformBrowser()
   try {
     const page = context.pages()[0] || await context.newPage()
     const initialListResponse = page.waitForResponse(
@@ -235,6 +238,14 @@ function apiPlugin() {
       const api = express()
       api.use(express.json({ limit: '2mb' }))
       api.get('/api/status', (_req, res) => res.json({ ok: true, ...getWorkspaceStatus() }))
+      api.get('/api/runtime-mode', (_req, res) => res.json({ ok: true, headless: headlessMode }))
+      api.post('/api/runtime-mode', (req, res) => {
+        if (typeof req.body?.headless !== 'boolean') {
+          return res.status(400).json({ ok: false, message: 'headless 必须是布尔值' })
+        }
+        headlessMode = req.body.headless
+        return res.json({ ok: true, headless: headlessMode })
+      })
       api.get('/api/platform-status', async (_req, res) => {
         const names = readTaskItems(['createGroupToDoList.json', 'creategrouptodolist.json'])
         const analyseNames = readTaskItems(['analyseToDoList.json'])
@@ -275,7 +286,10 @@ function apiPlugin() {
         if (!script) return res.status(404).json({ ok: false, message: '未知操作' })
         if ([...jobs.values()].some((job) => job.running)) return res.status(409).json({ ok: false, message: '已有脚本正在运行，请等待完成' })
         const id = `${Date.now()}-${req.params.task}`
-        const child = spawn(process.execPath, [path.join(projectRoot, script)], { cwd: projectRoot })
+        const child = spawn(process.execPath, [path.join(projectRoot, script)], {
+          cwd: projectRoot,
+          env: { ...process.env, RUYI_HEADLESS: headlessMode ? '1' : '0' },
+        })
         const job = { id, task: req.params.task, running: true, output: '' }
         jobs.set(id, job)
         child.stdout.on('data', (data) => { job.output += data.toString() })
