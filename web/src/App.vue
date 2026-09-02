@@ -25,9 +25,9 @@ const jobId = ref('')
 const workspaceStatus = ref('等待操作')
 const statusCounts = ref({ rawCount: 0, createCount: 0, analyseCount: 0, doneCount: 0, idfaPending: 0, oaidPending: 0, insightPending: 0, resultPending: 0, createNames: [] })
 const jobLog = ref('')
-const createExpanded = ref(false)
-const insightExpanded = ref(false)
-const downloadExpanded = ref(false)
+const createExpanded = ref(true)
+const insightExpanded = ref(true)
+const downloadExpanded = ref(true)
 const headlessMode = ref(false)
 const modeUpdating = ref(false)
 
@@ -129,6 +129,7 @@ async function importFolder(event) {
   notice.value = data.ok
     ? `已导入 ${data.count} 个文件到 raw/${data.skipped ? `，跳过 ${data.skipped} 个不符合条件的文件` : ''}`
     : `导入失败：${data.message}`
+  await refreshStatus()
   event.target.value = ''
 }
 async function runTask(label) {
@@ -150,6 +151,10 @@ async function pollJob(label) {
   running.value = ''
   notice.value = job.code === 0 ? `${label}已完成` : `${label}执行失败，请查看终端日志`
   refreshStatus()
+  if (job.code === 0 && ['上传文件', '创建人群', '人群洞悉'].includes(label)) {
+    notice.value = `${label}已完成，正在检测当前状态...`
+    await detectCurrentStatus()
+  }
 }
 </script>
 
