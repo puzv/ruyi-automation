@@ -89,6 +89,39 @@ function getWorkspaceStatus() {
 function withoutExtension(name) { return path.basename(name).replace(/\.[^.]+$/, '') }
 function launchPlatformBrowser() { return launchBrowser({ headless: headlessMode }) }
 
+const loginTargets = {
+  datanexus: {
+    label: 'DataNexus',
+    url: 'https://datanexus.qq.com/web/workbench/file/import?from=dmp_MD5_IFA',
+    matches: (url) => url.hostname === 'datanexus.qq.com' && !/login|sso/i.test(`${url.pathname}${url.search}`),
+  },
+  ruyi: {
+    label: '如翼',
+    url: 'https://ruyi.qq.com/audience',
+    matches: (url) => url.hostname === 'ruyi.qq.com' && !/login|sso|\/auth/i.test(`${url.pathname}${url.search}`),
+  },
+}
+
+async function inspectLoginStatus() {
+  const context = await launchBrowser({ headless: true })
+  const sites = {}
+  try {
+    const page = context.pages()[0] || await context.newPage()
+    for (const [key, target] of Object.entries(loginTargets)) {
+      try {
+        await page.goto(target.url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+        await page.waitForTimeout(1200)
+        sites[key] = target.matches(new URL(page.url()))
+      } catch (_) {
+        sites[key] = false
+      }
+    }
+    return sites
+  } finally {
+    await context.close().catch(() => {})
+  }
+}
+
 async function inspectPlatformFiles(type, names) {
   const url = type === 'idfa'
     ? 'https://ruyi.qq.com/audience/dnUpload?idType=MD5_IFA'
@@ -238,6 +271,37 @@ function apiPlugin() {
       const api = express()
       api.use(express.json({ limit: '2mb' }))
       api.get('/api/status', (_req, res) => res.json({ ok: true, ...getWorkspaceStatus() }))
+      api.get('/api/login-status', async (_req, res) => {
+        try {
+          const sites = await inspectLoginStatus()
+          res.json({ ok: true, sites, loggedIn: Object.values(sites).every(Boolean) })
+        } catch (error) {
+          res.status(503).json({ ok: false, message: `无法检查登录状态：${error.message}` })
+        }
+      })
+      api.post('/api/login-open', async (_req, res) => {
+        try {
+          let status
+          try {
+            status = await inspectLoginStatus()
+          } catch (_) {
+            // 当前 Profile 可能正被用户打开的 Chrome 占用；此时无法再创建
+            // Playwright 上下文，按“两个站点都需要人工确认”处理。
+            status = Object.fromEntries(Object.keys(loginTargets).map((key) => [key, false]))
+          }
+          const missing = Object.entries(status).filter(([, loggedIn]) => !loggedIn).map(([key]) => key)
+          if (!missing.length) return res.json({ ok: true, opened: [], sites: status })
+          const openUrl = (url) => {
+            if (process.platform === 'darwin') spawn('open', [url], { detached: true, stdio: 'ignore' }).unref()
+            else if (process.platform === 'win32') spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' }).unref()
+            else spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref()
+          }
+          missing.forEach((key) => openUrl(loginTargets[key].url))
+          res.json({ ok: true, opened: missing, sites: status })
+        } catch (error) {
+          res.status(500).json({ ok: false, message: error.message })
+        }
+      })
       api.get('/api/runtime-mode', (_req, res) => res.json({ ok: true, headless: headlessMode }))
       api.post('/api/runtime-mode', (req, res) => {
         if (typeof req.body?.headless !== 'boolean') {
