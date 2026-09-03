@@ -76,16 +76,28 @@ function readFirstTaskCount(fileNames) {
 }
 
 function getWorkspaceStatus() {
-  const rawDir = path.join(uploadRoot, 'raw')
-  const rawCount = fs.existsSync(rawDir)
-    ? fs.readdirSync(rawDir).filter((name) => !name.startsWith('.') && fs.statSync(path.join(rawDir, name)).isFile()).length
-    : 0
+  // Uploads move from raw/ into idfa/ or oaid/ before the browser step. Count
+  // both locations so the queue reflects files that are still uploadable;
+  // files under */done are already complete and must not be included.
+  const pendingUploadCount = ['raw', 'idfa', 'oaid'].reduce((count, folderName) => {
+    const folder = path.join(uploadRoot, folderName)
+    if (!fs.existsSync(folder)) return count
+    return count + fs.readdirSync(folder)
+      .filter((name) => !name.startsWith('.') && name !== 'done')
+      .filter((name) => {
+        const file = path.join(folder, name)
+        if (!fs.statSync(file).isFile()) return false
+        if (folderName === 'raw') return /(?:idfa|oaid)/i.test(name)
+        return new RegExp(folderName, 'i').test(name)
+      })
+      .length
+  }, 0)
   const createNames = readTaskItems(['createGroupToDoList.json', 'creategrouptodolist.json'])
   const createCount = readFirstTaskCount(['createGroupToDoList.json', 'creategrouptodolist.json'])
   const analyseCount = readTaskCount('analyseToDoList.json')
   const doneCount = readTaskCount('done.json')
   const workspaceStatus = createCount > 0 ? '等待创建人群包' : analyseCount > 0 ? '等待洞悉人群包' : doneCount > 0 ? '等待下载' : '等待操作'
-  return { workspaceStatus, rawCount, createCount, createNames, analyseCount, doneCount }
+  return { workspaceStatus, rawCount: pendingUploadCount, createCount, createNames, analyseCount, doneCount }
 }
 
 function withoutExtension(name) { return path.basename(name).replace(/\.[^.]+$/, '') }

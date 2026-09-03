@@ -17,7 +17,7 @@ import {
   CircleUserRound,
   UsersRound,
 } from 'lucide-vue-next'
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 const folderInput = ref(null)
 const notice = ref('等待操作')
@@ -34,6 +34,48 @@ const modeUpdating = ref(false)
 const loginStatus = ref({ datanexus: false, ruyi: false, loggedIn: false, checking: true, error: '' })
 const loginOpening = ref(false)
 let loginStatusRequest = null
+let loginPollTimer = null
+let loginPollAttempts = 0
+
+function stopLoginPolling() {
+  if (loginPollTimer) {
+    window.clearInterval(loginPollTimer)
+    loginPollTimer = null
+  }
+  loginPollAttempts = 0
+}
+
+function startLoginPolling() {
+  stopLoginPolling()
+  // The login window owns the persistent profile until it is closed, so the
+  // status endpoint returns 409 while the user is signing in. Keep probing
+  // after closure instead of requiring a full page refresh.
+  loginPollTimer = window.setInterval(async () => {
+    loginPollAttempts += 1
+    if (loginPollAttempts > 120) {
+      stopLoginPolling()
+      return
+    }
+    try {
+      const response = await fetch('/api/login-status')
+      const data = await response.json()
+      if (!data.ok) {
+        if (response.status !== 409) {
+          loginStatus.value = { ...loginStatus.value, checking: false, error: data.message || '暂时无法检查登录状态' }
+        }
+        return
+      }
+      loginStatus.value = { ...data.sites, loggedIn: data.loggedIn, checking: false, error: '' }
+      if (data.loggedIn) {
+        stopLoginPolling()
+        notice.value = '登录状态已更新，两个平台均已登录'
+      }
+    } catch (_) {
+      // The local dev server can briefly restart while the browser closes;
+      // retain the last known state and let the next poll retry.
+    }
+  }, 1500)
+}
 
 const actions = [
   { label: '选择文件夹', hint: '准备原始数据文件', icon: FolderOpen, tone: 'mint' },
@@ -124,7 +166,13 @@ async function openLoginPages() {
     const data = await response.json()
     if (data.ok) {
       loginStatus.value = { ...data.sites, loggedIn: Object.values(data.sites || {}).every(Boolean), checking: false, error: '' }
-      notice.value = data.opened.length ? '已打开未登录的平台页面，请完成登录后关闭窗口，再点击头像检查' : '两个平台均已登录'
+      if (data.opened.length) {
+        notice.value = '已打开未登录的平台页面，请完成登录后关闭窗口，状态会自动更新'
+        startLoginPolling()
+      } else {
+        stopLoginPolling()
+        notice.value = '两个平台均已登录'
+      }
     }
     else notice.value = `打开登录页面失败：${data.message || '无法启动浏览器'}`
   } catch (error) {
@@ -132,6 +180,7 @@ async function openLoginPages() {
   } finally { loginOpening.value = false }
 }
 onMounted(() => { refreshStatus(); refreshRuntimeMode(); refreshLoginStatus() })
+onBeforeUnmount(stopLoginPolling)
 function chooseFolder() { folderInput.value?.click() }
 async function detectCurrentStatus() {
   await refreshStatus()

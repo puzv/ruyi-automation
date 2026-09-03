@@ -118,18 +118,52 @@ async function waitForUploadSuccessCount(page, expected, timeout = 60000) {
 
 async function waitForImportPageReady(page, pageReadyResponse = null) {
   // domcontentloaded 只代表 HTML 到达；数据平台的上传组件还依赖场景方案接口。
-  // 等待接口（若本次导航触发了它）和上传控件挂载，避免过早 setInputFiles 导致页面无提示。
-  const fileInput = page.locator('input[type="file"]').first();
+  // 上传控件在部分版本中会在点击“文件上传”后才动态创建，因此不能把
+  // input[type=file] 的提前挂载作为页面就绪条件。
   if (pageReadyResponse) {
-    // 接口可能因缓存而不再发起；控件先就绪时无需白等接口超时。
+    // 接口可能因缓存而不再发起；页面入口可见时无需白等接口超时。
     await Promise.race([
       pageReadyResponse,
-      fileInput.waitFor({ state: "attached", timeout: 30000 }),
+      page.getByText("文件上传", { exact: true }).first().waitFor({ state: "visible", timeout: 30000 }),
     ]);
   }
-  await fileInput.waitFor({ state: "attached", timeout: 30000 });
   await page.getByText("文件上传", { exact: true }).first().waitFor({ state: "visible", timeout: 30000 });
   await page.waitForTimeout(1500);
+}
+
+async function setUploadFiles(page, files) {
+  const fileInput = page.locator('input[type="file"]').first();
+  // Newer builds render the hidden input eagerly. This is the least invasive
+  // path and avoids opening a native chooser in headless mode.
+  if (await fileInput.count()) {
+    try {
+      // A selector can briefly match a node that is being replaced by the
+      // upload component. Use a short attachment window so that transient
+      // nodes do not turn into the original 30s timeout.
+      await fileInput.waitFor({ state: "attached", timeout: 3000 });
+      await fileInput.setInputFiles(files, { timeout: 10000 });
+      return;
+    } catch (error) {
+      if (!/Timeout|detached|not attached|closed/i.test(error.message || "")) throw error;
+    }
+  }
+
+  // Older/dynamic builds create the input only as a result of clicking the
+  // upload control. Use Playwright's filechooser event so this also works in
+  // headless mode and does not depend on a transient DOM node.
+  const trigger = page.getByText("文件上传", { exact: true }).first();
+  const chooserPromise = page.waitForEvent("filechooser", { timeout: 10000 }).catch(() => null);
+  await trigger.click();
+  const chooser = await chooserPromise;
+  if (chooser) {
+    await chooser.setFiles(files);
+    return;
+  }
+
+  // If the click mounted an input but did not emit filechooser, use the new
+  // node as a final compatibility fallback.
+  await fileInput.waitFor({ state: "attached", timeout: 10000 });
+  await fileInput.setInputFiles(files);
 }
 
 async function waitForSubmitNavigationOrFailure(page, successUrl, timeout = 60000) {
@@ -189,8 +223,7 @@ async function uploadFolder(page, config) {
     }
 
     await waitForImportPageReady(page, pageReadyResponse);
-    const fileInput = page.locator('input[type="file"]').first();
-    await fileInput.setInputFiles(batch);
+    await setUploadFiles(page, batch);
     await page.waitForTimeout(1000);
     console.log(`已一次性选择第 ${offset + 1}-${batchEnd}/${files.length} 个 ${config.idType.toUpperCase()} 文件：${batch.map((file) => path.basename(file)).join("、")}`);
     const successCount = await waitForUploadSuccessCount(page, batch.length);
