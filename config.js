@@ -60,7 +60,12 @@ function detectChromePath() {
 }
 
 const chromePath = process.env.RUYI_CHROME_PATH || detectChromePath();
-const browserHeadless = /^(1|true|yes|on)$/i.test(process.env.RUYI_HEADLESS || "");
+// Run in background mode by default. Set RUYI_HEADLESS=0 (or false/no/off)
+// when a visible browser is needed for login, CAPTCHA, or debugging.
+const headlessEnv = process.env.RUYI_HEADLESS;
+const browserHeadless = headlessEnv == null
+  ? true
+  : /^(1|true|yes|on)$/i.test(headlessEnv);
 
 module.exports = {
   projectRoot,
