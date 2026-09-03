@@ -10,6 +10,7 @@ import { createRequire } from 'node:module'
 const projectRoot = path.resolve(__dirname, '..')
 const uploadRoot = process.env.RUYI_UPLOAD_DIR || path.join(projectRoot, 'upload')
 const jobs = new Map()
+const loginContexts = new Set()
 const uploadMiddleware = multer({ storage: multer.memoryStorage() })
 const require = createRequire(import.meta.url)
 const { launchBrowser } = require('../lib/browser.js')
@@ -291,12 +292,15 @@ function apiPlugin() {
           }
           const missing = Object.entries(status).filter(([, loggedIn]) => !loggedIn).map(([key]) => key)
           if (!missing.length) return res.json({ ok: true, opened: [], sites: status })
-          const openUrl = (url) => {
-            if (process.platform === 'darwin') spawn('open', [url], { detached: true, stdio: 'ignore' }).unref()
-            else if (process.platform === 'win32') spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' }).unref()
-            else spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref()
+          const context = await launchBrowser({ headless: false })
+          loginContexts.add(context)
+          context.on('close', () => loginContexts.delete(context))
+          const first = context.pages()[0] || await context.newPage()
+          await first.goto(loginTargets[missing[0]].url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {})
+          for (const key of missing.slice(1)) {
+            const page = await context.newPage()
+            await page.goto(loginTargets[key].url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {})
           }
-          missing.forEach((key) => openUrl(loginTargets[key].url))
           res.json({ ok: true, opened: missing, sites: status })
         } catch (error) {
           res.status(500).json({ ok: false, message: error.message })

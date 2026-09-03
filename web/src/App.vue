@@ -14,6 +14,7 @@ import {
   Monitor,
   MonitorOff,
   RefreshCw,
+  CircleUserRound,
   UsersRound,
 } from 'lucide-vue-next'
 import { onMounted, ref } from 'vue'
@@ -30,6 +31,8 @@ const insightExpanded = ref(true)
 const downloadExpanded = ref(true)
 const headlessMode = ref(false)
 const modeUpdating = ref(false)
+const loginStatus = ref({ datanexus: false, ruyi: false, loggedIn: false, checking: true })
+const loginOpening = ref(false)
 
 const actions = [
   { label: '选择文件夹', hint: '准备原始数据文件', icon: FolderOpen, tone: 'mint' },
@@ -88,7 +91,28 @@ async function toggleRuntimeMode() {
     modeUpdating.value = false
   }
 }
-onMounted(() => { refreshStatus(); refreshRuntimeMode() })
+async function refreshLoginStatus() {
+  loginStatus.value = { ...loginStatus.value, checking: true }
+  try {
+    const response = await fetch('/api/login-status')
+    const data = await response.json()
+    if (data.ok) loginStatus.value = { ...data.sites, loggedIn: data.loggedIn, checking: false }
+  } catch (_) { loginStatus.value = { ...loginStatus.value, checking: false } }
+}
+async function openLoginPages() {
+  if (loginOpening.value) return
+  loginOpening.value = true
+  try {
+    const response = await fetch('/api/login-open', { method: 'POST' })
+    const data = await response.json()
+    if (data.ok) notice.value = data.opened.length ? '已打开未登录的平台页面，请完成登录后重新检查' : '两个平台均已登录'
+    else notice.value = `打开登录页面失败：${data.message || '无法启动浏览器'}`
+    await refreshLoginStatus()
+  } catch (error) {
+    notice.value = `打开登录页面失败：${error.message || '无法连接本地服务'}`
+  } finally { loginOpening.value = false }
+}
+onMounted(() => { refreshStatus(); refreshRuntimeMode(); refreshLoginStatus() })
 function chooseFolder() { folderInput.value?.click() }
 async function detectCurrentStatus() {
   await refreshStatus()
@@ -169,6 +193,9 @@ async function pollJob(label) {
         </div>
       </div>
 
+      <button class="login-status" type="button" :class="{ logged: loginStatus.loggedIn }" :disabled="loginOpening || loginStatus.checking" :title="loginStatus.loggedIn ? '两个平台均已登录' : '点击打开未登录的平台页面'" @click="openLoginPages">
+        <CircleUserRound :size="26" /><span>{{ loginStatus.checking ? '检查登录状态…' : loginStatus.loggedIn ? '平台已登录' : '需要登录' }}</span>
+      </button>
       <div class="side-section-label">工作流</div>
       <nav class="side-nav" aria-label="工作流导航">
         <a class="side-link active" href="#operations"><ListChecks :size="17" /> 操作面板</a>
@@ -176,7 +203,7 @@ async function pollJob(label) {
       </nav>
 
       <div class="sidebar-footer">
-        <div class="connection"><span class="status-dot"></span><span>本地工作区已就绪</span></div>
+      <div class="connection"><span class="status-dot"></span><span>本地工作区已就绪</span></div>
         <div class="version">v1.0 · macOS</div>
       </div>
     </aside>
