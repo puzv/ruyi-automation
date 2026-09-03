@@ -5,7 +5,7 @@ const { profileDir, chromePath, urls, resultDirCandidates, uploadRootCandidates 
 const resultUrl = urls.result;
 const { requireUploadRoot } = require("./lib/paths");
 const { readJsonArray, writeJsonArray, ensureDir } = require("./lib/files");
-const { launchBrowser } = require("./lib/browser");
+const { launchBrowser, closeBrowserContext } = require("./lib/browser");
 const { checkPreflight } = require("./lib/preflight");
 
 function resolveDoneTask() {
@@ -92,12 +92,18 @@ async function selectTask(page, fileName) {
 async function clickDownload(page) {
   const download = page.getByText("下载数据", { exact: true }).last();
   await download.waitFor({ state: "visible", timeout: 30000 });
+  const context = page.context();
+  let pageClosed = false;
+  let contextClosed = false;
+  page.once("close", () => { pageClosed = true; });
+  context.once("close", () => { contextClosed = true; });
   const downloadEvent = page.waitForEvent("download", { timeout: 30000 }).catch(() => null);
   await download.click();
   const file = await downloadEvent;
   if (file) {
     const failure = await file.failure();
     console.log(`已触发下载：${file.suggestedFilename()}${failure ? `（失败：${failure}）` : ""}`);
+    if (failure) console.log(`下载失败时页面状态：pageClosed=${pageClosed} contextClosed=${contextClosed} url=${page.url()}`);
     if (!failure) {
       const filePath = await file.path();
       if (filePath) {
@@ -132,7 +138,7 @@ async function clickDownload(page) {
       }
     }
   } else {
-    console.log("已点击下载数据，但 30 秒内未捕获浏览器下载事件。");
+    console.log(`已点击下载数据，但 30 秒内未捕获浏览器下载事件（pageClosed=${pageClosed} contextClosed=${contextClosed} url=${page.url()}）。`);
   }
   return false;
 }
@@ -146,7 +152,7 @@ async function main() {
     context = await launchBrowser({ acceptDownloads: true });
   } catch (error) {
     if (/existing browser session|Target page, context or browser has been closed/i.test(error.message)) {
-      throw new Error("无法启动浏览器：ruyi-profile 正被其他 Chrome 会话占用。请完全退出 Chrome 后重新运行 conclude.js。");
+      throw new Error("无法启动浏览器：ruyi-profile 正被其他 Chrome 会话占用。请完全退出 Chrome 后重新运行 downloadAll.js。");
     }
     throw error;
   }
@@ -162,7 +168,7 @@ async function main() {
     if (!await clickDownload(page)) throw new Error("下载未成功，保留完成清单中的文件名以便重试");
     removeDoneFile(donePath, fileName);
   } finally {
-    await context.close();
+    await closeBrowserContext(context);
   }
 }
 

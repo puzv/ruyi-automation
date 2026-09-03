@@ -31,8 +31,9 @@ const insightExpanded = ref(true)
 const downloadExpanded = ref(true)
 const headlessMode = ref(false)
 const modeUpdating = ref(false)
-const loginStatus = ref({ datanexus: false, ruyi: false, loggedIn: false, checking: true })
+const loginStatus = ref({ datanexus: false, ruyi: false, loggedIn: false, checking: true, error: '' })
 const loginOpening = ref(false)
+let loginStatusRequest = null
 
 const actions = [
   { label: '选择文件夹', hint: '准备原始数据文件', icon: FolderOpen, tone: 'mint' },
@@ -92,12 +93,28 @@ async function toggleRuntimeMode() {
   }
 }
 async function refreshLoginStatus() {
+  if (loginStatusRequest) return loginStatusRequest
   loginStatus.value = { ...loginStatus.value, checking: true }
-  try {
-    const response = await fetch('/api/login-status')
-    const data = await response.json()
-    if (data.ok) loginStatus.value = { ...data.sites, loggedIn: data.loggedIn, checking: false }
-  } catch (_) { loginStatus.value = { ...loginStatus.value, checking: false } }
+  loginStatusRequest = (async () => {
+    try {
+      const response = await fetch('/api/login-status')
+      const data = await response.json()
+      if (data.ok) {
+        loginStatus.value = { ...data.sites, loggedIn: data.loggedIn, checking: false, error: '' }
+      } else {
+        // A locked/failed probe is not evidence that the user is logged out.
+        // Keep the distinction visible so the user knows to close competing
+        // Chrome windows or retry instead of logging in again.
+        loginStatus.value = { ...loginStatus.value, checking: false, error: data.message || '暂时无法检查登录状态' }
+        notice.value = `登录状态检查失败：${data.message || '请稍后重试'}`
+      }
+    } catch (_) {
+      loginStatus.value = { ...loginStatus.value, checking: false, error: '无法连接本地服务' }
+    } finally {
+      loginStatusRequest = null
+    }
+  })()
+  return loginStatusRequest
 }
 async function openLoginPages() {
   if (loginOpening.value) return
@@ -105,9 +122,11 @@ async function openLoginPages() {
   try {
     const response = await fetch('/api/login-open', { method: 'POST' })
     const data = await response.json()
-    if (data.ok) notice.value = data.opened.length ? '已打开未登录的平台页面，请完成登录后重新检查' : '两个平台均已登录'
+    if (data.ok) {
+      loginStatus.value = { ...data.sites, loggedIn: Object.values(data.sites || {}).every(Boolean), checking: false, error: '' }
+      notice.value = data.opened.length ? '已打开未登录的平台页面，请完成登录后关闭窗口，再点击头像检查' : '两个平台均已登录'
+    }
     else notice.value = `打开登录页面失败：${data.message || '无法启动浏览器'}`
-    await refreshLoginStatus()
   } catch (error) {
     notice.value = `打开登录页面失败：${error.message || '无法连接本地服务'}`
   } finally { loginOpening.value = false }
@@ -193,8 +212,8 @@ async function pollJob(label) {
         </div>
       </div>
 
-      <button class="login-status" type="button" :class="{ logged: loginStatus.loggedIn }" :disabled="loginOpening || loginStatus.checking" :title="loginStatus.loggedIn ? '两个平台均已登录' : '点击打开未登录的平台页面'" @click="openLoginPages">
-        <CircleUserRound :size="26" /><span>{{ loginStatus.checking ? '检查登录状态…' : loginStatus.loggedIn ? '平台已登录' : '需要登录' }}</span>
+      <button class="login-status" type="button" :class="{ logged: loginStatus.loggedIn }" :disabled="loginOpening || loginStatus.checking" :title="loginStatus.error || (loginStatus.loggedIn ? '两个平台均已登录' : '点击打开未登录的平台页面')" @click="openLoginPages">
+        <CircleUserRound :size="26" /><span>{{ loginStatus.checking ? '检查登录状态…' : loginStatus.error ? '登录状态不可用' : loginStatus.loggedIn ? '平台已登录' : '需要登录' }}</span>
       </button>
       <div class="side-section-label">工作流</div>
       <nav class="side-nav" aria-label="工作流导航">

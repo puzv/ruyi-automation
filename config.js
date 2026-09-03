@@ -14,6 +14,18 @@ const defaultChromePath = process.platform === "win32"
     : "/usr/bin/google-chrome";
 
 function detectChromePath() {
+  // Prefer Playwright's tested Chromium build when available. Recent system
+  // Chrome releases can abort with SIGILL under Playwright's persistent,
+  // remote-debugging mode (the page then reports `Target page, context or
+  // browser has been closed` during downloads). The profile data, cookies and
+  // sessions remain compatible because they are stored separately.
+  try {
+    const playwrightChrome = require("playwright").chromium.executablePath();
+    if (playwrightChrome && fs.existsSync(playwrightChrome)) return playwrightChrome;
+  } catch (_) {
+    // Playwright may not be installed yet; the preflight check reports that
+    // situation and the normal system-browser detection below still applies.
+  }
   const candidates = process.platform === "win32"
     ? [
       process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, "Google/Chrome/Application/chrome.exe"),

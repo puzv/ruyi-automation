@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const { profileDir, chromePath, urls, uploadRootCandidates, projectRoot, audienceLimit } = require("./config");
-const { launchBrowser } = require("./lib/browser");
+const { launchBrowser, closeBrowserContext } = require("./lib/browser");
 const { findUploadRoot } = require("./lib/paths");
 const { readJsonArray } = require("./lib/files");
 const { checkPreflight } = require("./lib/preflight");
@@ -68,7 +68,7 @@ async function inspectAudienceTotal() {
     console.log(`当前人群总记录数：${total}`);
     return total;
   } finally {
-    await context.close();
+    await closeBrowserContext(context);
     console.log("人群列表页面已关闭。");
   }
 }

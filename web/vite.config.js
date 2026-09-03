@@ -11,9 +11,10 @@ const projectRoot = path.resolve(__dirname, '..')
 const uploadRoot = process.env.RUYI_UPLOAD_DIR || path.join(projectRoot, 'upload')
 const jobs = new Map()
 const loginContexts = new Set()
+let profileProbeRunning = false
 const uploadMiddleware = multer({ storage: multer.memoryStorage() })
 const require = createRequire(import.meta.url)
-const { launchBrowser } = require('../lib/browser.js')
+const { launchBrowser, closeBrowserContext } = require('../lib/browser.js')
 const { browserHeadless } = require('../config.js')
 let headlessMode = browserHeadless
 
@@ -104,22 +105,48 @@ const loginTargets = {
 }
 
 async function inspectLoginStatus() {
-  const context = await launchBrowser({ headless: true })
+  // Always use the shared persistent profile so the probe sees exactly the
+  // cookies/session that workflow scripts use.  A short retry handles the
+  // small window in which Chrome is still releasing Singleton* files after a
+  // previous context was closed.
+  let context
+  let lastError
+  for (let attempt = 0; attempt < 3 && !context; attempt += 1) {
+    try {
+      context = await launchBrowser({ headless: true })
+    } catch (error) {
+      lastError = error
+      if (!/ProcessSingleton|profile directory|already in use|Target page, context or browser has been closed/i.test(error.message || '')) throw error
+      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)))
+    }
+  }
+  if (!context) throw lastError || new Error('无法启动登录状态检查浏览器')
   const sites = {}
   try {
-    const page = context.pages()[0] || await context.newPage()
     for (const [key, target] of Object.entries(loginTargets)) {
+      // Use a fresh page per platform.  Reusing one page can preserve an
+      // intermediate SSO redirect and make the second site look logged out.
+      const page = context.pages()[0] && key === 'datanexus'
+        ? context.pages()[0]
+        : await context.newPage()
       try {
-        await page.goto(target.url, { waitUntil: 'domcontentloaded', timeout: 30000 })
-        await page.waitForTimeout(1200)
-        sites[key] = target.matches(new URL(page.url()))
+        const response = await page.goto(target.url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+        await page.waitForTimeout(1500)
+        const currentUrl = new URL(page.url())
+        const bodyText = await page.locator('body').innerText().catch(() => '')
+        const hasLoginPrompt = /(请先登录|请登录|立即登录|扫码登录|账号登录|统一登录)/i.test(bodyText)
+        // URL checks alone are insufficient: some SSO shells keep the
+        // original path while rendering a login prompt.  Conversely, a 401
+        // response must never be reported as authenticated.
+        sites[key] = Boolean(response && response.status() < 400 && target.matches(currentUrl) && !hasLoginPrompt)
       } catch (_) {
         sites[key] = false
       }
+      if (key !== 'datanexus') await page.close().catch(() => {})
     }
     return sites
   } finally {
-    await context.close().catch(() => {})
+    await closeBrowserContext(context)
   }
 }
 
@@ -152,7 +179,7 @@ async function inspectPlatformFiles(type, names) {
     await search.fill('')
     return { missingCount, platformCount: names.length - missingCount }
   } finally {
-    await context.close()
+    await closeBrowserContext(context)
     console.log(`${type.toUpperCase()} 平台文件检查页面已关闭。`)
   }
 }
@@ -189,7 +216,7 @@ async function inspectAnalyseAudience(names) {
     }
     return foundUnavailable.size
   } finally {
-    await context.close()
+    await closeBrowserContext(context)
     console.log('人群列表检查页面已关闭。')
   }
 }
@@ -260,7 +287,7 @@ async function inspectInsightResults(names) {
     console.log(`洞悉结果检查完成：计算中 ${foundComputing.size} 个。`)
     return foundComputing.size
   } finally {
-    await context.close()
+    await closeBrowserContext(context)
     console.log('洞悉结果检查页面已关闭。')
   }
 }
@@ -273,33 +300,68 @@ function apiPlugin() {
       api.use(express.json({ limit: '2mb' }))
       api.get('/api/status', (_req, res) => res.json({ ok: true, ...getWorkspaceStatus() }))
       api.get('/api/login-status', async (_req, res) => {
+        if (profileProbeRunning) return res.status(409).json({ ok: false, message: '登录状态检查正在进行，请稍后重试。' })
+        if ([...jobs.values()].some((job) => job.running) || loginContexts.size) {
+          return res.status(409).json({ ok: false, message: '浏览器 Profile 正在执行其他操作，请稍后重试。' })
+        }
+        profileProbeRunning = true
         try {
           const sites = await inspectLoginStatus()
           res.json({ ok: true, sites, loggedIn: Object.values(sites).every(Boolean) })
         } catch (error) {
           res.status(503).json({ ok: false, message: `无法检查登录状态：${error.message}` })
+        } finally {
+          profileProbeRunning = false
         }
       })
       api.post('/api/login-open', async (_req, res) => {
         try {
+          if (profileProbeRunning || [...jobs.values()].some((job) => job.running)) {
+            return res.status(409).json({ ok: false, message: '浏览器 Profile 正在执行其他操作，请稍后重试。' })
+          }
+          if (loginContexts.size) {
+            return res.status(409).json({ ok: false, message: '登录窗口已打开，请先完成登录后关闭窗口，再重新检测状态。' })
+          }
           let status
+          profileProbeRunning = true
           try {
             status = await inspectLoginStatus()
           } catch (_) {
             // 当前 Profile 可能正被用户打开的 Chrome 占用；此时无法再创建
             // Playwright 上下文，按“两个站点都需要人工确认”处理。
             status = Object.fromEntries(Object.keys(loginTargets).map((key) => [key, false]))
+          } finally {
+            profileProbeRunning = false
           }
           const missing = Object.entries(status).filter(([, loggedIn]) => !loggedIn).map(([key]) => key)
           if (!missing.length) return res.json({ ok: true, opened: [], sites: status })
-          const context = await launchBrowser({ headless: false })
-          loginContexts.add(context)
-          context.on('close', () => loginContexts.delete(context))
-          const first = context.pages()[0] || await context.newPage()
-          await first.goto(loginTargets[missing[0]].url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {})
-          for (const key of missing.slice(1)) {
-            const page = await context.newPage()
-            await page.goto(loginTargets[key].url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {})
+          let openedContext = null
+          try {
+            openedContext = await launchBrowser({ headless: false })
+            loginContexts.add(openedContext)
+            openedContext.on('close', () => loginContexts.delete(openedContext))
+            const first = openedContext.pages()[0] || await openedContext.newPage()
+            await first.goto(loginTargets[missing[0]].url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {})
+            for (const key of missing.slice(1)) {
+              const page = await openedContext.newPage()
+              await page.goto(loginTargets[key].url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {})
+            }
+          } catch (error) {
+            // If creating/opening the login context failed for a reason other
+            // than an already-running Chrome, do not leak a partially-created
+            // persistent context (and its Singleton* locks).
+            if (openedContext && !loginContexts.has(openedContext)) {
+              await closeBrowserContext(openedContext).catch(() => {})
+            }
+            if (!/ProcessSingleton|profile directory|already in use|Target page, context or browser has been closed/i.test(error.message)) throw error
+            // Profile 已被用户打开的 Chrome 占用时，不能再创建第二个
+            // Chromium 实例；将 URL 交给现有 Chrome 进程打开即可继续登录。
+            const openUrl = (url) => {
+              if (process.platform === 'darwin') spawn('open', ['-a', 'Google Chrome', url], { detached: true, stdio: 'ignore' }).unref()
+              else if (process.platform === 'win32') spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' }).unref()
+              else spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref()
+            }
+            missing.forEach((key) => openUrl(loginTargets[key].url))
           }
           res.json({ ok: true, opened: missing, sites: status })
         } catch (error) {
@@ -315,23 +377,32 @@ function apiPlugin() {
         return res.json({ ok: true, headless: headlessMode })
       })
       api.get('/api/platform-status', async (_req, res) => {
+        if (profileProbeRunning) return res.status(409).json({ ok: false, message: '平台状态检查正在进行，请稍后重试。' })
+        if ([...jobs.values()].some((job) => job.running) || loginContexts.size) {
+          return res.status(409).json({ ok: false, message: '浏览器 Profile 正在执行其他操作，请稍后重试。' })
+        }
+        profileProbeRunning = true
         const names = readTaskItems(['createGroupToDoList.json', 'creategrouptodolist.json'])
         const analyseNames = readTaskItems(['analyseToDoList.json'])
         const doneNames = readTaskItems(['done.json'])
         const groups = { idfa: names.filter((name) => /idfa/i.test(name)), oaid: names.filter((name) => /oaid/i.test(name)) }
         const result = { idfaPending: 0, oaidPending: 0, insightPending: 0, resultPending: 0 }
         const errors = []
-        // 按工作流顺序逐个访问平台地址；单个阶段失败不阻断后续阶段。
-        const checks = [
-          ['IDFA 文件列表', async () => { if (groups.idfa.length) result.idfaPending = (await inspectPlatformFiles('idfa', groups.idfa)).missingCount }],
-          ['OAID 文件列表', async () => { if (groups.oaid.length) result.oaidPending = (await inspectPlatformFiles('oaid', groups.oaid)).missingCount }],
-          ['人群列表', async () => { if (analyseNames.length) result.insightPending = await inspectAnalyseAudience(analyseNames) }],
-          ['洞悉结果列表', async () => { if (doneNames.length) result.resultPending = await inspectInsightResults(doneNames) }],
-        ]
-        for (const [label, check] of checks) {
-          try { await check() } catch (error) { errors.push(`${label}：${error.message}`) }
+        try {
+          // 按工作流顺序逐个访问平台地址；单个阶段失败不阻断后续阶段。
+          const checks = [
+            ['IDFA 文件列表', async () => { if (groups.idfa.length) result.idfaPending = (await inspectPlatformFiles('idfa', groups.idfa)).missingCount }],
+            ['OAID 文件列表', async () => { if (groups.oaid.length) result.oaidPending = (await inspectPlatformFiles('oaid', groups.oaid)).missingCount }],
+            ['人群列表', async () => { if (analyseNames.length) result.insightPending = await inspectAnalyseAudience(analyseNames) }],
+            ['洞悉结果列表', async () => { if (doneNames.length) result.resultPending = await inspectInsightResults(doneNames) }],
+          ]
+          for (const [label, check] of checks) {
+            try { await check() } catch (error) { errors.push(`${label}：${error.message}`) }
+          }
+          res.json({ ok: true, ...result, errors })
+        } finally {
+          profileProbeRunning = false
         }
-        res.json({ ok: true, ...result, errors })
       })
       api.post('/api/import-folder', uploadMiddleware.array('files'), (req, res) => {
         try {
@@ -359,6 +430,8 @@ function apiPlugin() {
         const scripts = { upload: 'uploadAll.js', create: 'createAllGroup.js', analyse: 'analyseAll.js', download: 'downloadAll.js' }
         const script = scripts[req.params.task]
         if (!script) return res.status(404).json({ ok: false, message: '未知操作' })
+        if (profileProbeRunning) return res.status(409).json({ ok: false, message: '登录或平台状态检查正在进行，请稍后重试' })
+        if (loginContexts.size) return res.status(409).json({ ok: false, message: '登录窗口仍在使用 Profile，请完成登录并关闭窗口后再运行任务' })
         if ([...jobs.values()].some((job) => job.running)) return res.status(409).json({ ok: false, message: '已有脚本正在运行，请等待完成' })
         const id = `${Date.now()}-${req.params.task}`
         const child = spawn(process.execPath, [path.join(projectRoot, script)], {

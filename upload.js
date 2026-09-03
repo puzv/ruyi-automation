@@ -5,7 +5,7 @@ const { chromium } = require("playwright");
 const { uploadRootCandidates, profileDir, chromePath, urls, browserHeadless } = require("./config");
 const { requireUploadRoot } = require("./lib/paths");
 const { readJsonArray, writeJsonArray } = require("./lib/files");
-const { launchBrowser } = require("./lib/browser");
+const { launchBrowser, closeBrowserContext } = require("./lib/browser");
 const uploadRoot = requireUploadRoot("上传");
 
 if (!uploadRoot) {
@@ -272,7 +272,7 @@ async function uploadFolder(page, config) {
     process.exitCode = 1;
   } finally {
     if (context) {
-      await context.close().catch(() => {});
+      await closeBrowserContext(context);
       console.log("浏览器已关闭，上传脚本结束。");
     }
   }

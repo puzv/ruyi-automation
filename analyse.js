@@ -5,7 +5,7 @@ const { chromium } = require("playwright");
 const { profileDir, chromePath, uploadRootCandidates, urls, browserHeadless } = require("./config");
 const { requireUploadRoot } = require("./lib/paths");
 const { readJsonArray, writeJsonArray } = require("./lib/files");
-const { launchBrowser } = require("./lib/browser");
+const { launchBrowser, closeBrowserContext } = require("./lib/browser");
 const { checkPreflight } = require("./lib/preflight");
 
 function withoutExtension(fileName) {
@@ -234,7 +234,7 @@ async function main() {
     await submitInsight(page);
     recordDone(donePath, listPath, fileName);
   } finally {
-    await context.close();
+    await closeBrowserContext(context);
   }
 }
 

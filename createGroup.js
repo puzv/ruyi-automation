@@ -5,7 +5,7 @@ const { chromium } = require("playwright");
 const { profileDir, chromePath, uploadRootCandidates, urls, browserHeadless } = require("./config");
 const { requireUploadRoot } = require("./lib/paths");
 const { readJsonArray, writeJsonArray } = require("./lib/files");
-const { launchBrowser } = require("./lib/browser");
+const { launchBrowser, closeBrowserContext } = require("./lib/browser");
 const { checkPreflight } = require("./lib/preflight");
 
 const groupUrls = {
@@ -203,7 +203,7 @@ async function main() {
     removeFromCreateTodoList(todoPath, fileName);
     console.log(`已根据 ${fileName} 跳转到 ${groupType.toUpperCase()} 创建地址：${url}`);
   } finally {
-    await context.close();
+    await closeBrowserContext(context);
     console.log("浏览器已关闭。");
   }
 }
