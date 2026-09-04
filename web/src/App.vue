@@ -193,7 +193,7 @@ async function openLoginPages() {
     if (data.ok) {
       loginStatus.value = { ...data.sites, loggedIn: Object.values(data.sites || {}).every(Boolean), checking: false, error: '' }
       if (data.opened.length) {
-        notice.value = '已打开未登录的平台页面，请完成登录后关闭窗口，状态会自动更新'
+        notice.value = '已打开未登录平台页面，请完成当前登录并关闭窗口，下一平台会自动打开'
         startLoginPolling()
       } else {
         stopLoginPolling()

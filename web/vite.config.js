@@ -12,6 +12,7 @@ const uploadRoot = process.env.RUYI_UPLOAD_DIR || path.join(projectRoot, 'upload
 const jobs = new Map()
 const loginContexts = new Set()
 const activeContexts = new Set()
+let loginFlow = null
 let profileProbeRunning = false
 let profileReleaseRunning = false
 const uploadMiddleware = multer({ storage: multer.memoryStorage() })
@@ -113,6 +114,60 @@ function trackContext(context) {
     loginContexts.delete(context)
   })
   return context
+}
+
+/**
+ * Open missing login pages one at a time. A persistent context keeps the
+ * profile locked until it is closed, so a page-close event must advance the
+ * flow explicitly; waiting only for context.close() leaves the first page's
+ * profile lock in place when the user closes a tab/window.
+ */
+async function advanceLoginFlow(flow) {
+  if (!flow || flow.cancelled || flow.transitioning || loginFlow !== flow) return
+  if (profileReleaseRunning) {
+    flow.cancelled = true
+    loginFlow = null
+    return
+  }
+  flow.transitioning = true
+  const currentContext = flow.context
+  try {
+    // Closing the current context releases Singleton* files before launching
+    // the next one. This also handles a browser window close, where the
+    // context has already begun shutting down by the time this runs.
+    await closeBrowserContext(currentContext).catch(() => {})
+    loginContexts.delete(currentContext)
+    if (flow.cancelled || loginFlow !== flow || profileReleaseRunning) {
+      flow.cancelled = true
+      if (loginFlow === flow) loginFlow = null
+      return
+    }
+
+    const nextKey = flow.pending.shift()
+    if (!nextKey) {
+      loginFlow = null
+      return
+    }
+
+    const nextContext = trackContext(await launchBrowser({ headless: false }))
+    flow.context = nextContext
+    loginContexts.add(nextContext)
+    const page = nextContext.pages()[0] || await nextContext.newPage()
+    flow.page = page
+    page.once('close', () => { advanceLoginFlow(flow).catch(() => {}) })
+    nextContext.once('close', () => {
+      loginContexts.delete(nextContext)
+      advanceLoginFlow(flow).catch(() => {})
+    })
+    await page.goto(loginTargets[nextKey].url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {})
+  } catch (error) {
+    await closeBrowserContext(flow.context).catch(() => {})
+    loginContexts.delete(flow.context)
+    loginFlow = null
+    if (!flow.cancelled) flow.error = error
+  } finally {
+    flow.transitioning = false
+  }
 }
 
 function signalJobProcess(job, signal) {
@@ -339,7 +394,7 @@ function apiPlugin() {
       api.get('/api/login-status', async (_req, res) => {
         if (profileReleaseRunning) return res.status(409).json({ ok: false, message: 'Profile 资源释放正在进行，请稍候。' })
         if (profileProbeRunning) return res.status(409).json({ ok: false, message: '登录状态检查正在进行，请稍后重试。' })
-        if ([...jobs.values()].some((job) => job.running) || loginContexts.size) {
+        if ([...jobs.values()].some((job) => job.running) || loginContexts.size || loginFlow) {
           return res.status(409).json({ ok: false, message: '浏览器 Profile 正在执行其他操作，请稍后重试。' })
         }
         profileProbeRunning = true
@@ -358,7 +413,7 @@ function apiPlugin() {
           if (profileProbeRunning || [...jobs.values()].some((job) => job.running)) {
             return res.status(409).json({ ok: false, message: '浏览器 Profile 正在执行其他操作，请稍后重试。' })
           }
-          if (loginContexts.size) {
+          if (loginContexts.size || loginFlow) {
             return res.status(409).json({ ok: false, message: '登录窗口已打开，请先完成登录后关闭窗口，再重新检测状态。' })
           }
           let status
@@ -377,19 +432,33 @@ function apiPlugin() {
           let openedContext = null
           try {
             openedContext = trackContext(await launchBrowser({ headless: false }))
-            loginContexts.add(openedContext)
-            openedContext.on('close', () => loginContexts.delete(openedContext))
-            const first = openedContext.pages()[0] || await openedContext.newPage()
-            await first.goto(loginTargets[missing[0]].url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {})
-            for (const key of missing.slice(1)) {
-              const page = await openedContext.newPage()
-              await page.goto(loginTargets[key].url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {})
+            const flow = {
+              pending: missing.slice(1),
+              context: openedContext,
+              page: null,
+              transitioning: false,
+              cancelled: false,
+              error: null,
             }
+            loginFlow = flow
+            loginContexts.add(openedContext)
+            const first = openedContext.pages()[0] || await openedContext.newPage()
+            flow.page = first
+            first.once('close', () => { advanceLoginFlow(flow).catch(() => {}) })
+            openedContext.once('close', () => {
+              loginContexts.delete(openedContext)
+              advanceLoginFlow(flow).catch(() => {})
+            })
+            await first.goto(loginTargets[missing[0]].url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {})
           } catch (error) {
             // If creating/opening the login context failed for a reason other
             // than an already-running Chrome, do not leak a partially-created
             // persistent context (and its Singleton* locks).
-            if (openedContext && !loginContexts.has(openedContext)) {
+            if (openedContext) {
+              if (loginFlow?.context === openedContext) {
+                loginFlow.cancelled = true
+                loginFlow = null
+              }
               await closeBrowserContext(openedContext).catch(() => {})
             }
             if (!/ProcessSingleton|profile directory|already in use|Target page, context or browser has been closed/i.test(error.message)) throw error
@@ -449,7 +518,7 @@ function apiPlugin() {
       api.get('/api/platform-status', async (_req, res) => {
         if (profileReleaseRunning) return res.status(409).json({ ok: false, message: 'Profile 资源释放正在进行，请稍候。' })
         if (profileProbeRunning) return res.status(409).json({ ok: false, message: '平台状态检查正在进行，请稍后重试。' })
-        if ([...jobs.values()].some((job) => job.running) || loginContexts.size) {
+        if ([...jobs.values()].some((job) => job.running) || loginContexts.size || loginFlow) {
           return res.status(409).json({ ok: false, message: '浏览器 Profile 正在执行其他操作，请稍后重试。' })
         }
         profileProbeRunning = true
@@ -504,7 +573,7 @@ function apiPlugin() {
         if (!script) return res.status(404).json({ ok: false, message: '未知操作' })
         if (profileReleaseRunning) return res.status(409).json({ ok: false, message: 'Profile 资源释放正在进行，请稍后重试' })
         if (profileProbeRunning) return res.status(409).json({ ok: false, message: '登录或平台状态检查正在进行，请稍后重试' })
-        if (loginContexts.size) return res.status(409).json({ ok: false, message: '登录窗口仍在使用 Profile，请完成登录并关闭窗口后再运行任务' })
+        if (loginContexts.size || loginFlow) return res.status(409).json({ ok: false, message: '登录窗口仍在使用 Profile，请完成登录并关闭窗口后再运行任务' })
         if ([...jobs.values()].some((job) => job.running)) return res.status(409).json({ ok: false, message: '已有脚本正在运行，请等待完成' })
         const id = `${Date.now()}-${req.params.task}`
         const child = spawn(process.execPath, [path.join(projectRoot, script)], {
