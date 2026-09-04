@@ -11,10 +11,13 @@ const projectRoot = path.resolve(__dirname, '..')
 const uploadRoot = process.env.RUYI_UPLOAD_DIR || path.join(projectRoot, 'upload')
 const jobs = new Map()
 const loginContexts = new Set()
+const activeContexts = new Set()
 let profileProbeRunning = false
+let profileReleaseRunning = false
 const uploadMiddleware = multer({ storage: multer.memoryStorage() })
 const require = createRequire(import.meta.url)
 const { launchBrowser, closeBrowserContext } = require('../lib/browser.js')
+const { forceReleaseProfile } = require('../lib/preflight.js')
 const { browserHeadless } = require('../config.js')
 let headlessMode = browserHeadless
 
@@ -103,6 +106,28 @@ function getWorkspaceStatus() {
 function withoutExtension(name) { return path.basename(name).replace(/\.[^.]+$/, '') }
 function launchPlatformBrowser() { return launchBrowser({ headless: headlessMode }) }
 
+function trackContext(context) {
+  activeContexts.add(context)
+  context.on('close', () => {
+    activeContexts.delete(context)
+    loginContexts.delete(context)
+  })
+  return context
+}
+
+function signalJobProcess(job, signal) {
+  const pid = job?.child?.pid
+  if (!pid || pid === process.pid) return false
+  if (process.platform === 'win32') {
+    const args = ['/PID', String(pid), '/T']
+    if (signal === 'SIGKILL') args.push('/F')
+    spawn('taskkill', args, { detached: true, stdio: 'ignore' }).unref()
+    return true
+  }
+  process.kill(-pid, signal)
+  return true
+}
+
 const loginTargets = {
   datanexus: {
     label: 'DataNexus',
@@ -125,7 +150,7 @@ async function inspectLoginStatus() {
   let lastError
   for (let attempt = 0; attempt < 3 && !context; attempt += 1) {
     try {
-      context = await launchBrowser({ headless: true })
+      context = trackContext(await launchBrowser({ headless: true }))
     } catch (error) {
       lastError = error
       if (!/ProcessSingleton|profile directory|already in use|Target page, context or browser has been closed/i.test(error.message || '')) throw error
@@ -166,7 +191,7 @@ async function inspectPlatformFiles(type, names) {
   const url = type === 'idfa'
     ? 'https://ruyi.qq.com/audience/dnUpload?idType=MD5_IFA'
     : 'https://ruyi.qq.com/audience/dnUpload?idType=MD5_OAID'
-  const context = await launchPlatformBrowser()
+  const context = trackContext(await launchPlatformBrowser())
   try {
     const page = context.pages()[0] || await context.newPage()
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 })
@@ -197,7 +222,7 @@ async function inspectPlatformFiles(type, names) {
 }
 
 async function inspectAnalyseAudience(names) {
-  const context = await launchPlatformBrowser()
+  const context = trackContext(await launchPlatformBrowser())
   try {
     const page = context.pages()[0] || await context.newPage()
     await page.goto('https://ruyi.qq.com/audience', { waitUntil: 'domcontentloaded', timeout: 60000 })
@@ -234,7 +259,7 @@ async function inspectAnalyseAudience(names) {
 }
 
 async function inspectInsightResults(names) {
-  const context = await launchPlatformBrowser()
+  const context = trackContext(await launchPlatformBrowser())
   try {
     const page = context.pages()[0] || await context.newPage()
     const initialListResponse = page.waitForResponse(
@@ -312,6 +337,7 @@ function apiPlugin() {
       api.use(express.json({ limit: '2mb' }))
       api.get('/api/status', (_req, res) => res.json({ ok: true, ...getWorkspaceStatus() }))
       api.get('/api/login-status', async (_req, res) => {
+        if (profileReleaseRunning) return res.status(409).json({ ok: false, message: 'Profile 资源释放正在进行，请稍候。' })
         if (profileProbeRunning) return res.status(409).json({ ok: false, message: '登录状态检查正在进行，请稍后重试。' })
         if ([...jobs.values()].some((job) => job.running) || loginContexts.size) {
           return res.status(409).json({ ok: false, message: '浏览器 Profile 正在执行其他操作，请稍后重试。' })
@@ -328,6 +354,7 @@ function apiPlugin() {
       })
       api.post('/api/login-open', async (_req, res) => {
         try {
+          if (profileReleaseRunning) return res.status(409).json({ ok: false, message: 'Profile 资源释放正在进行，请稍候。' })
           if (profileProbeRunning || [...jobs.values()].some((job) => job.running)) {
             return res.status(409).json({ ok: false, message: '浏览器 Profile 正在执行其他操作，请稍后重试。' })
           }
@@ -349,7 +376,7 @@ function apiPlugin() {
           if (!missing.length) return res.json({ ok: true, opened: [], sites: status })
           let openedContext = null
           try {
-            openedContext = await launchBrowser({ headless: false })
+            openedContext = trackContext(await launchBrowser({ headless: false }))
             loginContexts.add(openedContext)
             openedContext.on('close', () => loginContexts.delete(openedContext))
             const first = openedContext.pages()[0] || await openedContext.newPage()
@@ -380,6 +407,37 @@ function apiPlugin() {
           res.status(500).json({ ok: false, message: error.message })
         }
       })
+      api.post('/api/profile-release', async (_req, res) => {
+        if (profileReleaseRunning) return res.status(409).json({ ok: false, message: 'Profile 释放正在进行，请稍候。' })
+        if (profileProbeRunning) return res.status(409).json({ ok: false, message: '登录或平台状态检查正在进行，请稍候完成后再释放。' })
+        profileReleaseRunning = true
+        const terminatedJobs = []
+        try {
+          // Tear down contexts owned by this service, then stop workflow child
+          // processes. Profile data (cookies/configuration) is never deleted.
+          for (const context of [...activeContexts]) await closeBrowserContext(context).catch(() => {})
+          const runningJobs = [...jobs.values()].filter((job) => job.running && job.child)
+          for (const job of runningJobs) {
+            try { if (signalJobProcess(job, 'SIGTERM')) terminatedJobs.push(job.id) } catch (_) {}
+          }
+          if (runningJobs.length) await new Promise((resolve) => setTimeout(resolve, 1200))
+          for (const job of runningJobs) {
+            // The parent may have exited while a spawnSync descendant remains;
+            // check/terminate the dedicated process group regardless of the
+            // child's `running` flag.
+            try { signalJobProcess(job, 'SIGKILL') } catch (_) {}
+          }
+          const result = forceReleaseProfile({ timeoutMs: 4000, graceMs: 300 })
+          const message = result.released
+            ? '已强制释放 Profile 相关资源，登录信息和 Profile 数据未被删除。'
+            : `释放完成但仍有锁文件占用：${(result.remainingLocks || []).join(', ')}`
+          return res.status(result.released ? 200 : 503).json({ ok: result.released, message, ...result, terminatedJobs })
+        } catch (error) {
+          return res.status(500).json({ ok: false, message: `释放 Profile 失败：${error.message}` })
+        } finally {
+          profileReleaseRunning = false
+        }
+      })
       api.get('/api/runtime-mode', (_req, res) => res.json({ ok: true, headless: headlessMode }))
       api.post('/api/runtime-mode', (req, res) => {
         if (typeof req.body?.headless !== 'boolean') {
@@ -389,6 +447,7 @@ function apiPlugin() {
         return res.json({ ok: true, headless: headlessMode })
       })
       api.get('/api/platform-status', async (_req, res) => {
+        if (profileReleaseRunning) return res.status(409).json({ ok: false, message: 'Profile 资源释放正在进行，请稍候。' })
         if (profileProbeRunning) return res.status(409).json({ ok: false, message: '平台状态检查正在进行，请稍后重试。' })
         if ([...jobs.values()].some((job) => job.running) || loginContexts.size) {
           return res.status(409).json({ ok: false, message: '浏览器 Profile 正在执行其他操作，请稍后重试。' })
@@ -417,6 +476,7 @@ function apiPlugin() {
         }
       })
       api.post('/api/import-folder', uploadMiddleware.array('files'), (req, res) => {
+        if (profileReleaseRunning) return res.status(409).json({ ok: false, message: 'Profile 资源释放正在进行，请稍候。' })
         try {
           const rawDir = path.resolve(uploadRoot, 'raw')
           fs.mkdirSync(rawDir, { recursive: true })
@@ -442,6 +502,7 @@ function apiPlugin() {
         const scripts = { upload: 'uploadAll.js', create: 'createAllGroup.js', analyse: 'analyseAll.js', download: 'downloadAll.js' }
         const script = scripts[req.params.task]
         if (!script) return res.status(404).json({ ok: false, message: '未知操作' })
+        if (profileReleaseRunning) return res.status(409).json({ ok: false, message: 'Profile 资源释放正在进行，请稍后重试' })
         if (profileProbeRunning) return res.status(409).json({ ok: false, message: '登录或平台状态检查正在进行，请稍后重试' })
         if (loginContexts.size) return res.status(409).json({ ok: false, message: '登录窗口仍在使用 Profile，请完成登录并关闭窗口后再运行任务' })
         if ([...jobs.values()].some((job) => job.running)) return res.status(409).json({ ok: false, message: '已有脚本正在运行，请等待完成' })
@@ -449,8 +510,12 @@ function apiPlugin() {
         const child = spawn(process.execPath, [path.join(projectRoot, script)], {
           cwd: projectRoot,
           env: { ...process.env, RUYI_HEADLESS: headlessMode ? '1' : '0' },
+          // Put the workflow and its spawnSync descendants in a dedicated
+          // process group so force release can terminate the whole tree.
+          detached: true,
         })
         const job = { id, task: req.params.task, running: true, output: '' }
+        Object.defineProperty(job, 'child', { value: child, enumerable: false, configurable: true })
         jobs.set(id, job)
         child.stdout.on('data', (data) => { job.output += data.toString() })
         child.stderr.on('data', (data) => { job.output += data.toString() })

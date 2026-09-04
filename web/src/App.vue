@@ -13,6 +13,7 @@ import {
   ListChecks,
   Monitor,
   MonitorOff,
+  Power,
   RefreshCw,
   CircleUserRound,
   UsersRound,
@@ -31,6 +32,7 @@ const insightExpanded = ref(true)
 const downloadExpanded = ref(true)
 const headlessMode = ref(true)
 const modeUpdating = ref(false)
+const profileReleasing = ref(false)
 const loginStatus = ref({ datanexus: false, ruyi: false, loggedIn: false, checking: true, error: '' })
 const loginOpening = ref(false)
 let loginStatusRequest = null
@@ -132,6 +134,30 @@ async function toggleRuntimeMode() {
     notice.value = `模式切换失败：${error.message || '无法连接本地服务'}`
   } finally {
     modeUpdating.value = false
+  }
+}
+async function forceReleaseProfile() {
+  if (profileReleasing.value) return
+  const confirmed = window.confirm('确定强制释放所有 Profile 相关资源吗？\n\n这会关闭本服务管理的浏览器和正在运行的任务；如有其他 Chrome 正在使用同一 Profile，也可能被终止。登录信息和 Profile 数据不会删除。')
+  if (!confirmed) return
+  profileReleasing.value = true
+  stopLoginPolling()
+  notice.value = '正在强制释放 Profile 资源，请稍候…'
+  running.value = ''
+  try {
+    const response = await fetch('/api/profile-release', { method: 'POST', headers: { 'content-type': 'application/json' } })
+    const data = await response.json().catch(() => ({}))
+    if (data.ok) {
+      notice.value = data.message || 'Profile 资源已释放'
+      loginStatus.value = { ...loginStatus.value, checking: false, error: '' }
+      await Promise.all([refreshStatus(), refreshLoginStatus()])
+    } else {
+      notice.value = `释放失败：${data.message || '仍有资源占用'}`
+    }
+  } catch (error) {
+    notice.value = `释放失败：${error.message || '无法连接本地服务'}`
+  } finally {
+    profileReleasing.value = false
   }
 }
 async function refreshLoginStatus() {
@@ -287,6 +313,7 @@ async function pollJob(label) {
             <span class="mode-option" :class="{ selected: !headlessMode }"><Monitor :size="16" /><span>调试模式</span></span>
             <span class="mode-option" :class="{ selected: headlessMode }"><MonitorOff :size="16" /><span>后台模式</span></span>
           </button>
+          <button class="help-button" type="button" :disabled="profileReleasing" title="关闭浏览器、任务并释放共享 Profile 资源" @click="forceReleaseProfile"><Power :size="18" /><span>{{ profileReleasing ? '释放中…' : '释放 Profile' }}</span></button>
           <a class="help-button" href="https://cf.ge.cn/pages/viewpage.action?pageId=289808671" target="_blank" rel="noopener noreferrer" aria-label="帮助"><CircleHelp :size="18" /><span>使用帮助</span></a>
         </div>
       </header>
@@ -304,7 +331,7 @@ async function pollJob(label) {
       <section id="operations" class="operations-section">
         <div class="section-heading"><div><p class="section-kicker">QUICK ACTIONS</p><h3>快捷操作</h3></div><span class="section-note">共 6 项操作</span></div>
         <div class="action-grid">
-          <button v-for="(action, index) in actions" :key="action.label" class="action-card" :class="[`tone-${action.tone}`, { running: running === taskByLabel[action.label] }]" type="button" @click="action.label === '选择文件夹' ? chooseFolder() : action.label === '检测当前状态' ? detectCurrentStatus() : runTask(action.label)">
+          <button v-for="(action, index) in actions" :key="action.label" class="action-card" :class="[`tone-${action.tone}`, { running: running === taskByLabel[action.label] }]" :disabled="profileReleasing" type="button" @click="action.label === '选择文件夹' ? chooseFolder() : action.label === '检测当前状态' ? detectCurrentStatus() : runTask(action.label)">
             <span class="action-index">0{{ index + 1 }}</span>
             <span class="action-icon"><component :is="action.icon" :size="22" stroke-width="1.8" /></span>
             <span class="action-copy"><strong>{{ action.label }}</strong><small>{{ action.hint }}</small></span>
