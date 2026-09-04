@@ -317,67 +317,57 @@ async function inspectInsightResults(names) {
   const context = trackContext(await launchPlatformBrowser())
   try {
     const page = context.pages()[0] || await context.newPage()
-    const initialListResponse = page.waitForResponse(
-      (response) => response.url().includes('/api/insight/list'),
-      { timeout: 60000 },
-    )
     await page.goto('https://ruyi.qq.com/audience-profile/result/', { waitUntil: 'domcontentloaded', timeout: 60000 })
     if (!page.url().startsWith('https://ruyi.qq.com/audience-profile/result')) throw new Error('洞悉结果页面需要登录或未打开成功')
-    // domcontentloaded 时任务接口和列表 DOM 可能尚未完成，直接读取会把“尚未加载”误判成 0 条。
-    await initialListResponse
-    const foundComputing = new Set()
-    const inspectedNames = new Set()
-    const normalizedNames = [...new Set(names.map((name) => withoutExtension(name).replace(/\s+/g, ' ').trim()))]
-    console.log(`开始查找洞悉结果：${normalizedNames.join('、')}`)
-    const items = page.locator('.listItem--G0aPY')
-    await items.first().waitFor({ state: 'visible', timeout: 30000 })
-    let pageNumber = 1
-    while (true) {
-      console.log(`正在检查结果页第 ${pageNumber} 页，共 ${await items.count()} 条。`)
-      for (let index = 0; index < await items.count(); index += 1) {
-        const item = items.nth(index)
-        const text = (await item.innerText()).replace(/\s+/g, ' ').trim()
-        const title = (await item.locator('.title--cpoFh').first().innerText().catch(() => '')).replace(/\s+/g, ' ').trim()
-        const matched = normalizedNames.find((name) => !inspectedNames.has(name) && (title === name || title === withoutExtension(name)))
-        if (!matched) continue
-        console.log(`找到匹配结果：${matched}，正在点击读取状态...`)
-        const isActive = (await item.getAttribute('class').catch(() => '')).includes('active--')
-        const detailResponse = isActive ? null : page.waitForResponse(
-          (response) => response.url().includes('/api/insight/getDetail'),
-          { timeout: 10000 },
-        ).catch(() => null)
-        await item.click()
-        if (detailResponse) await detailResponse
-        await page.waitForTimeout(200)
-        const status = page.locator('.infoTag--O5jqs:visible, .successTag--BFKBJ:visible').last()
-        let statusText = ''
-        const statusDeadline = Date.now() + 10000
-        while (!statusText && Date.now() < statusDeadline) {
-          statusText = (await status.innerText().catch(() => '')).replace(/\s+/g, ' ').trim()
-          if (!statusText) await page.waitForTimeout(250)
-        }
-        console.log(`洞悉任务 ${matched} 当前状态：${statusText || '未读取到状态'}`)
-        if (statusText) {
-          inspectedNames.add(matched)
-          if (statusText.includes('计算中')) foundComputing.add(matched)
-        }
+    // 列表接口支持按关键字过滤。直接查询接口比逐页读取 DOM 稳定，且
+    // 能处理同名记录：平台可能同时保留旧的 LOCKING 记录和新的 SUCCESS
+    // 记录，后续按更新时间选出与下载页一致的最新记录。
+    const normalizedNames = [...new Set(names.map((name) => withoutExtension(name).replace(/\s+/g, ' ').trim()).filter(Boolean))]
+    // 这些状态都不能安全下载：LOCKING 对应页面的“排队中” waitTag，
+    // PROCESSING 对应“计算中”，ERROR/FROZEN 代表失败或被冻结的结果。
+    const activeStatuses = new Set([
+      'PROCESSING', 'LOCKING', 'FROZEN', 'ERROR', 'PENDING', 'WAITING', 'GENERATING', 'FAILED',
+    ])
+    let pendingCount = 0
+    console.log(`开始检查洞悉结果：${normalizedNames.join('、')}`)
+    for (const target of normalizedNames) {
+      const payload = {
+        page: 1,
+        pageSize: 100,
+        sortField: 'lastModifiedTime',
+        sortType: 'DESC',
+        filtering: [
+          { field: 'keyword', operator: 'CONTAINS', values: [target] },
+          { field: 'type', operator: 'IN', values: ['TAG'] },
+          { field: 'status', operator: 'IN', values: ['SUCCESS', 'PROCESSING', 'ERROR', 'FROZEN', 'LOCKING'] },
+        ],
       }
-      if (inspectedNames.size === normalizedNames.length) {
-        console.log(`已读取全部 ${normalizedNames.length} 个洞悉任务的状态，停止继续翻页。`)
-        break
+      const response = await page.evaluate(async (request) => {
+        const result = await fetch('/api/insight/list', {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request),
+        })
+        if (!result.ok) throw new Error(`洞悉列表接口返回 HTTP ${result.status}`)
+        return result.json()
+      }, payload)
+      if (response?.success === false || (response?.code != null && response.code !== 0)) {
+        throw new Error(`洞悉列表接口失败：${response?.message || `code=${response?.code}`}`)
       }
-      const next = page.locator('ul.pagination li.page-roll.backward:not(.disabled) a').first()
-      if (!(await next.count()) || !(await next.isVisible().catch(() => false))) break
-      const previous = await items.first().innerText().catch(() => '')
-      await next.click()
-      await page.waitForFunction((oldText) => {
-        const first = document.querySelector('.listItem--G0aPY')
-        return first && first.innerText !== oldText
-      }, previous, { timeout: 30000 }).catch(() => {})
-      pageNumber += 1
+      const items = response?.data?.listing?.items || []
+      const matched = items.filter((item) => {
+        const itemName = String(item.name || '').replace(/\s+/g, ' ').trim()
+        return itemName === target || itemName === withoutExtension(target)
+      })
+      // API 已按 lastModifiedTime 倒序返回。同名洞悉可能有多条历史记录，
+      // 下载页同样默认选中第一条，因此只采用最新记录，不能因为历史
+      // SUCCESS 记录存在就把当前最新的 LOCKING/PROCESSING 误判为完成。
+      const latest = matched[0]
+      const latestStatus = String(latest?.status || '').toUpperCase()
+      const pending = activeStatuses.has(latestStatus)
+      if (pending) pendingCount += 1
+      console.log(`洞悉任务 ${target} 当前状态：${latestStatus || '未找到'}${matched.length > 1 ? `（同名 ${matched.length} 条，按最新记录判断）` : ''}`)
     }
-    console.log(`洞悉结果检查完成：计算中 ${foundComputing.size} 个。`)
-    return foundComputing.size
+    console.log(`洞悉结果检查完成：未就绪 ${pendingCount} 个。`)
+    return pendingCount
   } finally {
     await closeBrowserContext(context)
     console.log('洞悉结果检查页面已关闭。')

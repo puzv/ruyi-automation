@@ -357,7 +357,7 @@ async function pollJob(label) {
               <div class="queue-detail"><span>人群包平台处理中</span><strong>{{ statusCounts.insightPending }}</strong><small>个</small></div>
             </div>
             <div v-if="queue.key === 'doneCount' && downloadExpanded" class="queue-details">
-              <div class="queue-detail"><span>人群包平台洞悉中</span><strong>{{ statusCounts.resultPending }}</strong><small>个</small></div>
+              <div class="queue-detail"><span>洞悉结果未就绪</span><strong>{{ statusCounts.resultPending }}</strong><small>个</small></div>
             </div>
             </template>
           </div>

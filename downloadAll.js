@@ -50,6 +50,9 @@ function main() {
       const done = readDone(donePath);
       if (done.length > 1) done.push(done.shift());
       fs.writeFileSync(donePath, `${JSON.stringify(done, null, 2)}\n`, "utf8");
+      // Keep the in-memory queue aligned with the rotated on-disk order so
+      // the next log entry names the task download.js will actually select.
+      pending = done;
       stalled += 1;
       if (stalled >= done.length) {
         console.log("连续一轮下载任务均未就绪，暂时停止，保留 done.json 供下次重试。");
