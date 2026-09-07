@@ -1,12 +1,12 @@
 const fs = require("fs");
 const path = require("path");
-const readline = require("readline");
 const { chromium } = require("playwright");
 const { profileDir, chromePath, uploadRootCandidates, urls, browserHeadless } = require("./config");
 const { requireUploadRoot } = require("./lib/paths");
 const { readJsonArray, writeJsonArray } = require("./lib/files");
 const { launchBrowser, closeBrowserContext } = require("./lib/browser");
 const { checkPreflight } = require("./lib/preflight");
+const { navigateWithLogin } = require("./lib/login");
 
 const groupUrls = {
   idfa: urls.idfaUpload,
@@ -68,16 +68,6 @@ function removeFromCreateTodoList(todoPath, fileName) {
   ));
   writeJsonArray(todoPath, remaining);
   console.log(`已从创建任务清单移除：${fileName}`);
-}
-
-function waitForEnter(message = "页面操作完成后按回车关闭浏览器：") {
-  const input = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
-    input.question(message, () => {
-      input.close();
-      resolve();
-    });
-  });
 }
 
 async function selectAudienceFile(page, fileName) {
@@ -211,16 +201,18 @@ async function main() {
   const context = await launchBrowser();
 
   try {
-    const page = context.pages()[0] || (await context.newPage());
+    let page = context.pages()[0] || (await context.newPage());
     const url = groupUrls[groupType];
-    await page.goto(url, { waitUntil: "domcontentloaded" });
-    if (!page.url().includes("/audience/dnUpload")) {
-      if (browserHeadless) {
-        throw new Error("当前未登录或未进入人群文件页面；无头模式无法进行人工登录，请先用可视模式登录后再重试。");
-      }
-      await waitForEnter("请完成登录并进入人群文件页面后按回车继续：");
-      await page.goto(url, { waitUntil: "domcontentloaded" });
-    }
+    page = await navigateWithLogin(context, page, {
+      url,
+      expectedPath: "/audience/dnUpload",
+      label: `${groupType.toUpperCase()} 人群文件页面`,
+      headless: browserHeadless,
+      ready: async (candidate) => (
+        await candidate.locator(".file-select-wrap-left-table").isVisible().catch(() => false)
+        && await candidate.locator('input[placeholder="搜索文件ID/名称"]').first().isVisible().catch(() => false)
+      ),
+    });
     await selectAudienceFile(page, fileName);
     await fillGroupInfo(page, fileName);
     await submitGroup(page);

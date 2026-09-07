@@ -1,11 +1,11 @@
 const fs = require("fs");
 const path = require("path");
-const readline = require("readline");
 const { chromium } = require("playwright");
 const { uploadRootCandidates, profileDir, chromePath, urls, browserHeadless } = require("./config");
 const { requireUploadRoot } = require("./lib/paths");
 const { readJsonArray, writeJsonArray } = require("./lib/files");
 const { launchBrowser, closeBrowserContext } = require("./lib/browser");
+const { navigateWithLogin } = require("./lib/login");
 const uploadRoot = requireUploadRoot("上传");
 
 if (!uploadRoot) {
@@ -136,13 +136,6 @@ function appendCreateGroupTodoList(uploadRoot, files) {
   console.log(`已更新创建任务清单：${todoPath}（新增 ${added} 个文件，当前 ${todo.length} 个）`);
 }
 
-async function pressEnter(message) {
-  console.log(message);
-  const input = readline.createInterface({ input: process.stdin, output: process.stdout });
-  await new Promise((resolve) => input.question("完成后按回车继续：", resolve));
-  input.close();
-}
-
 async function waitForUploadSuccessCount(page, expected, timeout = 60000) {
   // Count the upload widget's success status nodes, rather than arbitrary
   // page text.  This remains correct if the surrounding copy changes.
@@ -163,21 +156,6 @@ async function waitForUploadSuccessCount(page, expected, timeout = 60000) {
     await page.waitForTimeout(250);
   }
   return lastVisibleCount;
-}
-
-async function waitForImportPageReady(page, pageReadyResponse = null) {
-  // domcontentloaded 只代表 HTML 到达；数据平台的上传组件还依赖场景方案接口。
-  // 上传控件在部分版本中会在点击“文件上传”后才动态创建，因此不能把
-  // input[type=file] 的提前挂载作为页面就绪条件。
-  if (pageReadyResponse) {
-    // 接口可能因缓存而不再发起；页面入口可见时无需白等接口超时。
-    await Promise.race([
-      pageReadyResponse,
-      page.getByText("文件上传", { exact: true }).first().waitFor({ state: "visible", timeout: 30000 }),
-    ]);
-  }
-  await page.getByText("文件上传", { exact: true }).first().waitFor({ state: "visible", timeout: 30000 });
-  await page.waitForTimeout(1500);
 }
 
 async function setUploadFiles(page, files) {
@@ -240,7 +218,7 @@ async function waitForSubmitNavigationOrFailure(page, successUrl, timeout = 6000
   return null;
 }
 
-async function uploadFolder(page, config) {
+async function uploadFolder(context, page, config) {
   const completedFiles = [];
   const folder = path.join(uploadRoot, config.idType);
   const files = resolveBatchNameCollisions(getFiles(folder, config.idType), folder, 5);
@@ -255,23 +233,17 @@ async function uploadFolder(page, config) {
     const batchEnd = offset + batch.length;
     console.log(`开始第 ${offset / 5 + 1} 批：${batch.length} 个文件（${offset + 1}-${batchEnd}/${files.length}）`);
 
-    const waitForScheme = () => page.waitForResponse(
-      (response) => response.url().includes("/fileaccess/api/scene/scheme"),
-      { timeout: 15000 },
-    ).catch(() => null);
-    let pageReadyResponse = waitForScheme();
-    await page.goto(config.importUrl, { waitUntil: "domcontentloaded" });
-    if (!page.url().includes("/web/workbench/file/import")) {
-      if (browserHeadless) {
-        throw new Error("当前未登录或未进入文件导入页面；后台模式无法进行人工登录，请先用调试模式登录后再重试。");
-      }
-      await pressEnter("请在数据平台页面完成登录，并进入文件导入页面；完成后按回车继续。");
-      // 登录后重新导航，前一次等待的响应不再适用。
-      pageReadyResponse = waitForScheme();
-      await page.goto(config.importUrl, { waitUntil: "domcontentloaded" });
-    }
-
-    await waitForImportPageReady(page, pageReadyResponse);
+    page = await navigateWithLogin(context, page, {
+      url: config.importUrl,
+      expectedPath: "/web/workbench/file/import",
+      label: `${config.idType.toUpperCase()} 文件导入页面`,
+      headless: browserHeadless,
+      ready: async (candidate) => (
+        await candidate.getByText("文件上传", { exact: true }).first().isVisible().catch(() => false)
+        || await candidate.locator('input[type="file"]').first().count() > 0
+      ),
+    });
+    await page.waitForTimeout(1500);
     await setUploadFiles(page, batch);
     await page.waitForTimeout(1000);
     console.log(`已一次性选择第 ${offset + 1}-${batchEnd}/${files.length} 个 ${config.idType.toUpperCase()} 文件：${batch.map((file) => path.basename(file)).join("、")}`);
@@ -369,7 +341,7 @@ async function uploadFolder(page, config) {
       return getFiles(folder, item.idType).length > 0;
     });
     if (config) {
-      completedFiles = await uploadFolder(page, config);
+      completedFiles = await uploadFolder(context, page, config);
     } else {
       console.log("IDFA 和 OAID 文件夹中都没有待上传文件。");
     }

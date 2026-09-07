@@ -116,6 +116,54 @@ function trackContext(context) {
   return context
 }
 
+function openExternalUrl(url) {
+  if (process.platform === 'darwin') spawn('open', ['-a', 'Google Chrome', url], { detached: true, stdio: 'ignore' }).unref()
+  else if (process.platform === 'win32') spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' }).unref()
+  else spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref()
+}
+
+function sleep(milliseconds) { return new Promise((resolve) => setTimeout(resolve, milliseconds)) }
+
+/**
+ * Fallback for the case where an existing Chrome process already owns the
+ * persistent profile. We cannot observe its tab close event, so poll until
+ * the profile is released, verify the just-finished site, then open exactly
+ * one next login URL. This replaces the old missing.forEach(openUrl) behavior
+ * that opened both login pages at once.
+ */
+async function advanceExternalLoginFlow(flow) {
+  if (!flow || flow.cancelled || loginFlow !== flow || flow.transitioning) return
+  flow.transitioning = true
+  try {
+    while (!flow.cancelled && loginFlow === flow) {
+      // The external Chrome must release the profile before Playwright can
+      // inspect cookies. A short grace period avoids racing window startup.
+      await sleep(1500)
+      if (!waitForProfileRelease({ timeoutMs: 0 })) continue
+      let sites
+      try { sites = await inspectLoginStatus() } catch (_) { continue }
+      const current = flow.currentKey
+      if (current && !sites[current]) {
+        // The user closed the page before authentication completed. Reopen
+        // only that page; never advance to the second site prematurely.
+        openExternalUrl(loginTargets[current].url)
+        continue
+      }
+      const next = flow.pending.shift()
+      if (!next) {
+        loginFlow = null
+        return
+      }
+      flow.currentKey = next
+      openExternalUrl(loginTargets[next].url)
+      // Give Chrome time to acquire the lock before the next poll cycle.
+      await sleep(1000)
+    }
+  } finally {
+    flow.transitioning = false
+  }
+}
+
 /**
  * Open missing login pages one at a time. A persistent context keeps the
  * profile locked until it is closed, so a page-close event must advance the
@@ -126,12 +174,18 @@ async function advanceLoginFlow(flow) {
   if (!flow || flow.cancelled || flow.transitioning || loginFlow !== flow) return
   if (profileReleaseRunning) {
     flow.cancelled = true
+    if (flow.closeWatch) clearInterval(flow.closeWatch)
+    flow.closeWatch = null
     loginFlow = null
     return
   }
   flow.transitioning = true
   const currentContext = flow.context
   try {
+    if (flow.closeWatch) {
+      clearInterval(flow.closeWatch)
+      flow.closeWatch = null
+    }
     // Closing the current context releases Singleton* files before launching
     // the next one. This also handles a browser window close, where the
     // context has already begun shutting down by the time this runs.
@@ -143,7 +197,19 @@ async function advanceLoginFlow(flow) {
       return
     }
 
-    const nextKey = flow.pending.shift()
+    // Closing the login window flushes cookies to the persistent profile.
+    // Verify the site that was just handled before advancing; if login was
+    // incomplete, reopen the same site instead of silently moving on.
+    let completed = true
+    if (flow.currentKey) {
+      try {
+        const sites = await inspectLoginStatus()
+        completed = Boolean(sites[flow.currentKey])
+      } catch (_) {
+        completed = false
+      }
+    }
+    const nextKey = completed ? flow.pending.shift() : flow.currentKey
     if (!nextKey) {
       loginFlow = null
       return
@@ -151,6 +217,7 @@ async function advanceLoginFlow(flow) {
 
     const nextContext = trackContext(await launchBrowser({ headless: false }))
     flow.context = nextContext
+    flow.currentKey = nextKey
     loginContexts.add(nextContext)
     const page = nextContext.pages()[0] || await nextContext.newPage()
     flow.page = page
@@ -159,8 +226,25 @@ async function advanceLoginFlow(flow) {
       loginContexts.delete(nextContext)
       advanceLoginFlow(flow).catch(() => {})
     })
+    // page/context close events are normally sufficient. Keep a lightweight
+    // watchdog as a compatibility fallback for Chrome builds that close the
+    // native window without forwarding the page close event promptly.
+    flow.closeWatch = setInterval(() => {
+      if (loginFlow !== flow || flow.cancelled) {
+        clearInterval(flow.closeWatch)
+        flow.closeWatch = null
+        return
+      }
+      if (page.isClosed() || nextContext.pages().every((item) => item.isClosed())) {
+        clearInterval(flow.closeWatch)
+        flow.closeWatch = null
+        advanceLoginFlow(flow).catch(() => {})
+      }
+    }, 500)
     await page.goto(loginTargets[nextKey].url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {})
   } catch (error) {
+    if (flow.closeWatch) clearInterval(flow.closeWatch)
+    flow.closeWatch = null
     await closeBrowserContext(flow.context).catch(() => {})
     loginContexts.delete(flow.context)
     loginFlow = null
@@ -424,8 +508,10 @@ function apiPlugin() {
             openedContext = trackContext(await launchBrowser({ headless: false }))
             const flow = {
               pending: missing.slice(1),
+              currentKey: missing[0],
               context: openedContext,
               page: null,
+              closeWatch: null,
               transitioning: false,
               cancelled: false,
               error: null,
@@ -439,6 +525,16 @@ function apiPlugin() {
               loginContexts.delete(openedContext)
               advanceLoginFlow(flow).catch(() => {})
             })
+            flow.closeWatch = setInterval(() => {
+              if (loginFlow !== flow || flow.cancelled) {
+                clearInterval(flow.closeWatch)
+                flow.closeWatch = null
+              } else if (first.isClosed() || openedContext.pages().every((item) => item.isClosed())) {
+                clearInterval(flow.closeWatch)
+                flow.closeWatch = null
+                advanceLoginFlow(flow).catch(() => {})
+              }
+            }, 500)
             await first.goto(loginTargets[missing[0]].url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {})
           } catch (error) {
             // If creating/opening the login context failed for a reason other
@@ -453,13 +549,23 @@ function apiPlugin() {
             }
             if (!/ProcessSingleton|profile directory|already in use|Target page, context or browser has been closed/i.test(error.message)) throw error
             // Profile 已被用户打开的 Chrome 占用时，不能再创建第二个
-            // Chromium 实例；将 URL 交给现有 Chrome 进程打开即可继续登录。
-            const openUrl = (url) => {
-              if (process.platform === 'darwin') spawn('open', ['-a', 'Google Chrome', url], { detached: true, stdio: 'ignore' }).unref()
-              else if (process.platform === 'win32') spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' }).unref()
-              else spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref()
+            // Chromium 实例。只打开第一个站点；外部 Chrome 无法提供
+            // Playwright 的 page.close 事件，因此由后台轮询 Profile 释放
+            // 和登录 Cookie 后再顺序打开下一个站点。
+            const flow = {
+              external: true,
+              pending: missing.slice(1),
+              currentKey: missing[0],
+              transitioning: false,
+              cancelled: false,
+              closeWatch: null,
             }
-            missing.forEach((key) => openUrl(loginTargets[key].url))
+            loginFlow = flow
+            openExternalUrl(loginTargets[missing[0]].url)
+            advanceExternalLoginFlow(flow).catch((error) => {
+              if (loginFlow === flow) loginFlow = null
+              flow.error = error
+            })
           }
           res.json({ ok: true, opened: missing, sites: status })
         } catch (error) {

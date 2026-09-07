@@ -1,12 +1,12 @@
 const fs = require("fs");
 const path = require("path");
-const readline = require("readline");
 const { chromium } = require("playwright");
 const { profileDir, chromePath, uploadRootCandidates, urls, browserHeadless } = require("./config");
 const { requireUploadRoot } = require("./lib/paths");
 const { readJsonArray, writeJsonArray } = require("./lib/files");
 const { launchBrowser, closeBrowserContext } = require("./lib/browser");
 const { checkPreflight } = require("./lib/preflight");
+const { navigateWithLogin } = require("./lib/login");
 
 function withoutExtension(fileName) {
   return path.basename(fileName).replace(/\.(?:txt|csv)$/i, "");
@@ -48,11 +48,6 @@ function recordDone(donePath, listPath, fileName) {
   ));
   writeJsonArray(listPath, remaining);
   console.log(`已从分析任务清单移除：${fileName}`);
-}
-
-function waitForEnter(message) {
-  const input = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => input.question(message, () => { input.close(); resolve(); }));
 }
 
 async function selectAudience(page, fileName) {
@@ -241,17 +236,18 @@ async function main() {
   const { fileName, donePath, listPath } = resolveTaskFromUpload();
   const context = await launchBrowser();
   try {
-    const page = context.pages()[0] || await context.newPage();
+    let page = context.pages()[0] || await context.newPage();
     monitorPage(page);
-    await page.goto(urls.insightCreate, { waitUntil: "domcontentloaded", timeout: 60000 });
-    await page.waitForTimeout(1500);
-    if (!page.url().includes("/insight/create")) {
-      if (browserHeadless) {
-        throw new Error("当前未登录或未进入洞察创建页面；无头模式无法进行人工登录，请先用可视模式登录后再重试。");
-      }
-      await waitForEnter("请完成登录并进入洞察创建页面后按回车继续：");
-      await page.goto(urls.insightCreate, { waitUntil: "domcontentloaded" });
-    }
+    page = await navigateWithLogin(context, page, {
+      url: urls.insightCreate,
+      expectedPath: "/insight/create",
+      label: "洞察创建页面",
+      headless: browserHeadless,
+      ready: async (candidate) => (
+        await candidate.locator(".ndmp-audience-select:visible").first().isVisible().catch(() => false)
+        || await candidate.getByText("请选择", { exact: true }).first().isVisible().catch(() => false)
+      ),
+    });
     await selectAudience(page, fileName);
     await fillTaskName(page, fileName);
     await selectInsightFilters(page);
