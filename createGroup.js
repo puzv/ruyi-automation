@@ -89,46 +89,71 @@ async function selectAudienceFile(page, fileName) {
     normalizeName(nameWithoutExtension),
   ]);
   const list = page.locator(".file-select-wrap-left-table");
+  const search = page.locator('input[placeholder="搜索文件ID/名称"]').first();
   await list.waitFor({ state: "visible", timeout: 30000 });
+  await search.waitFor({ state: "visible", timeout: 30000 });
+
+  // Always use the platform search box. The table is dynamically rendered and
+  // virtualized; iterating nth(19) can hit a detached row while the list is
+  // refreshing. Waiting for the matching API response also removes the old
+  // fixed 800ms race.
+  const searchResponse = page.waitForResponse((response) => {
+    if (!response.url().includes("/api/dnFile/list") || response.request().method() !== "POST") return false;
+    try {
+      return JSON.parse(response.request().postData() || "{}").searchKey === nameWithoutExtension;
+    } catch (_) {
+      return false;
+    }
+  }, { timeout: 30000 }).catch(() => null);
+  await search.fill(nameWithoutExtension);
+  const response = await searchResponse;
+  if (!response) {
+    throw new Error(`搜索文件超时：${requestedName}（未收到文件列表接口响应）`);
+  }
+
   const rows = list.locator("tr.spaui-table-tr-data");
-  await rows.first().waitFor({ state: "visible", timeout: 30000 });
-  const fileCells = rows.locator('td[data-index="2"]');
-  let matchedRow = null;
   const displayedNames = [];
-  async function findVisibleMatch() {
-    for (let index = 0; index < await fileCells.count(); index += 1) {
-      const displayedName = normalizeName(await fileCells.nth(index).innerText());
-      if (!displayedNames.includes(displayedName)) displayedNames.push(displayedName);
-      if (candidates.has(displayedName)) return rows.nth(index);
+  let matchedIndex = -1;
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    try {
+      // Read the currently attached DOM in one operation. This avoids waiting
+      // on an individual row that may be replaced during virtual scrolling.
+      const names = await rows.locator('td[data-index="2"]').evaluateAll((cells) =>
+        cells.map((cell) => (cell.textContent || "").replace(/\s+/g, " ").trim()));
+      names.forEach((name) => {
+        if (name && !displayedNames.includes(name)) displayedNames.push(name);
+      });
+      matchedIndex = names.findIndex((name) => candidates.has(name));
+      if (matchedIndex >= 0) break;
+    } catch (_) {
+      // The table is being replaced; retry against the fresh DOM.
     }
-    return null;
-  }
-  matchedRow = await findVisibleMatch();
-
-  if (!matchedRow) {
-    const search = page.locator('input[placeholder="搜索文件ID/名称"]').first();
-    if (await search.count()) {
-      await search.fill(nameWithoutExtension);
-      await page.waitForTimeout(800);
-      matchedRow = await findVisibleMatch();
-    }
-  }
-
-  if (!matchedRow) {
-    throw new Error(`列表中找不到文件名称：${requestedName}；当前页面文件：${displayedNames.join("、")}`);
+    await page.waitForTimeout(250);
   }
 
-  const checkbox = matchedRow.locator('input.check, input[type="checkbox"]').first();
-  const checkboxLabel = matchedRow.locator("label.spaui-checkbox").first();
-  if (!(await checkbox.isChecked())) {
-    if (await checkboxLabel.count() > 0) {
-      await checkboxLabel.click();
-    } else {
-      await checkbox.check();
+  if (matchedIndex < 0) {
+    throw new Error(`列表中找不到文件名称：${requestedName}；搜索结果：${displayedNames.join("、") || "无"}`);
+  }
+
+  // The row can still be replaced between reading and clicking, so retry the
+  // interaction briefly instead of failing on a detached locator.
+  let selected = false;
+  for (let attempt = 0; attempt < 20 && !selected; attempt += 1) {
+    try {
+      const matchedRow = rows.nth(matchedIndex);
+      const checkbox = matchedRow.locator('input.check, input[type="checkbox"]').first();
+      const checkboxLabel = matchedRow.locator("label.spaui-checkbox").first();
+      if (!(await checkbox.isChecked())) {
+        if (await checkboxLabel.count() > 0) await checkboxLabel.click();
+        else await checkbox.check();
+      }
+      selected = await checkbox.isChecked();
+    } catch (_) {
+      await page.waitForTimeout(250);
     }
   }
-  await page.waitForTimeout(200);
-  if (!(await checkbox.isChecked())) {
+  if (!selected) {
     throw new Error(`文件名称已找到，但复选框未能选中：${requestedName}`);
   }
 
