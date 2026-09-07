@@ -14,7 +14,7 @@ const groupUrls = {
 };
 
 function withoutExtension(fileName) {
-  return path.basename(fileName).replace(/\.[^.]+$/, "");
+  return path.basename(fileName).replace(/\.(?:txt|csv)$/i, "");
 }
 
 function getGroupType(fileName) {
@@ -82,7 +82,7 @@ function waitForEnter(message = "页面操作完成后按回车关闭浏览器�
 
 async function selectAudienceFile(page, fileName) {
   const requestedName = path.basename(fileName);
-  const nameWithoutExtension = requestedName.replace(/\.[^.]+$/, "");
+  const nameWithoutExtension = requestedName.replace(/\.(?:txt|csv)$/i, "");
   const normalizeName = (name) => name.replace(/\s+/g, " ").trim();
   const candidates = new Set([
     normalizeName(requestedName),

@@ -9,7 +9,7 @@ const { launchBrowser, closeBrowserContext } = require("./lib/browser");
 const { checkPreflight } = require("./lib/preflight");
 
 function withoutExtension(fileName) {
-  return path.basename(fileName).replace(/\.[^.]+$/, "");
+  return path.basename(fileName).replace(/\.(?:txt|csv)$/i, "");
 }
 
 function resolveTask(uploadRoot) {
@@ -57,7 +57,7 @@ function waitForEnter(message) {
 
 async function selectAudience(page, fileName) {
   const requested = path.basename(fileName);
-  const stem = requested.replace(/\.[^.]+$/, "");
+  const stem = requested.replace(/\.(?:txt|csv)$/i, "");
   const normalize = (value) => value.replace(/\s+/g, " ").trim();
   const candidates = new Set([normalize(requested), normalize(stem)]);
 

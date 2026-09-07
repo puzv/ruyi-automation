@@ -32,7 +32,7 @@ function getResultDir() {
 
 async function selectTask(page, fileName) {
   const requested = path.basename(fileName);
-  const stem = requested.replace(/\.[^.]+$/, "");
+  const stem = requested.replace(/\.(?:txt|csv)$/i, "");
   // The result list is paginated (often hundreds of pages), so always use the
   // built-in search rather than walking pages one by one.
   const searchTrigger = page.getByText("搜索", { exact: true }).first();

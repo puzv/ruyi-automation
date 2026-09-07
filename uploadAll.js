@@ -93,11 +93,11 @@ function writeRawFileList(uploadRoot) {
         const lowerName = path.basename(file).toLowerCase();
         return lowerName.includes("idfa") || lowerName.includes("oaid");
       })
-      .map((file) => path.basename(file).replace(/\.[^.]+$/, ""));
+      .map((file) => path.basename(file).replace(/\.(?:txt|csv)$/i, ""));
   });
   const fileNames = [...new Set([...existing, ...discovered]
     .filter((name) => typeof name === "string")
-    .map((name) => path.basename(name).replace(/\.[^.]+$/, "")))].sort();
+    .map((name) => path.basename(name).replace(/\.(?:txt|csv)$/i, "")))].sort();
   fs.writeFileSync(manifestPath, `${JSON.stringify(fileNames, null, 2)}\n`, "utf8");
   console.log(`已更新创建任务清单：${manifestPath}（${fileNames.length} 个文件）`);
 }

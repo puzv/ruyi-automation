@@ -51,7 +51,7 @@ function moveToDone(files, folder) {
 }
 
 function withoutExtension(fileName) {
-  return path.basename(fileName).replace(/\.[^.]+$/, "");
+  return path.basename(fileName).replace(/\.(?:txt|csv)$/i, "");
 }
 
 function platformFileName(fileName) {
@@ -59,11 +59,56 @@ function platformFileName(fileName) {
   return Array.from(withoutExtension(fileName)).slice(0, 30).join('');
 }
 
+function platformUploadKey(fileName) {
+  // The import page normalizes punctuation (for example `.` -> `_`) before
+  // truncating names to 30 Unicode characters.  Files that collide after
+  // this normalization are silently collapsed by the widget when selected
+  // together, so rename later files before selecting the batch.
+  const normalized = withoutExtension(fileName)
+    .replace(/[^A-Za-z0-9\u4e00-\u9fff_-]/g, "_");
+  return Array.from(normalized).slice(0, 30).join("");
+}
+
+function resolveBatchNameCollisions(files, folder, limit = 5) {
+  const batch = files.slice(0, limit);
+  const usedKeys = new Set();
+  const reservedKeys = new Set(batch.map((file) => platformUploadKey(file)));
+  const resolved = [];
+  const doneDir = path.join(folder, "done");
+  for (const sourceFile of batch) {
+    let file = sourceFile;
+    let key = platformUploadKey(file);
+    if (usedKeys.has(key)) {
+      const name = path.basename(sourceFile);
+      const extensionMatch = name.match(/\.(?:txt|csv)$/i);
+      const extension = extensionMatch ? extensionMatch[0] : "";
+      const stem = name.slice(0, name.length - extension.length);
+      for (let prefix = 1; ; prefix += 1) {
+        const candidateName = `${prefix}${stem}${extension}`;
+        const candidate = path.join(folder, candidateName);
+        const candidateKey = platformUploadKey(candidateName);
+        if (usedKeys.has(candidateKey) || reservedKeys.has(candidateKey)
+          || fs.existsSync(candidate)
+          || fs.existsSync(path.join(doneDir, candidateName))) continue;
+        fs.renameSync(sourceFile, candidate);
+        file = candidate;
+        key = candidateKey;
+        console.log(`检测到平台名称冲突，已重命名：${name} -> ${candidateName}`);
+        break;
+      }
+    }
+    usedKeys.add(key);
+    resolved.push(file);
+  }
+  return resolved;
+}
+
 function findExistingFileInBatch(message, batch) {
   const match = String(message).match(/文件名\s*(.+?)已存在/);
   if (!match) return null;
   const requested = withoutExtension(match[1].trim());
-  return batch.find((file) => withoutExtension(file) === requested) || null;
+  return batch.find((file) => withoutExtension(file) === requested
+    || platformUploadKey(file) === requested) || null;
 }
 
 function appendCreateGroupTodoList(uploadRoot, files) {
@@ -99,9 +144,12 @@ async function pressEnter(message) {
 }
 
 async function waitForUploadSuccessCount(page, expected, timeout = 60000) {
-  // 使用精确文本，避免把页面说明中的“上传成功后……”误计为成功文件。
-  const success = page.getByText(/^(上传成功|导入成功|文件上传成功)$/i);
+  // Count the upload widget's success status nodes, rather than arbitrary
+  // page text.  This remains correct if the surrounding copy changes.
+  const success = page.locator('[class*="_fileItemStatusText_"]')
+    .filter({ hasText: /^(上传成功|导入成功|文件上传成功)$/i });
   const deadline = Date.now() + timeout;
+  let lastVisibleCount = 0;
   while (Date.now() < deadline) {
     const count = await success.count();
     let visibleCount = 0;
@@ -110,10 +158,11 @@ async function waitForUploadSuccessCount(page, expected, timeout = 60000) {
         visibleCount += 1;
       }
     }
+    lastVisibleCount = visibleCount;
     if (visibleCount >= expected) return visibleCount;
     await page.waitForTimeout(250);
   }
-  return 0;
+  return lastVisibleCount;
 }
 
 async function waitForImportPageReady(page, pageReadyResponse = null) {
@@ -194,7 +243,7 @@ async function waitForSubmitNavigationOrFailure(page, successUrl, timeout = 6000
 async function uploadFolder(page, config) {
   const completedFiles = [];
   const folder = path.join(uploadRoot, config.idType);
-  const files = getFiles(folder, config.idType).slice(0, 5);
+  const files = resolveBatchNameCollisions(getFiles(folder, config.idType), folder, 5);
   if (files.length === 0) {
     console.log(`${config.idType.toUpperCase()} 文件夹没有待上传文件，跳过：${folder}`);
     return completedFiles;
@@ -248,8 +297,34 @@ async function uploadFolder(page, config) {
     }
     let submitSuccessMessage = null;
     for (let attempt = 1; attempt <= 60; attempt += 1) {
+      // The result page navigation can be lost even after batchCreate commits.
+      // Observe the API response as the source of truth so a successful submit
+      // is not retried and turned into a misleading duplicate-name error.
+      const batchResponse = page.waitForResponse(
+        (response) => response.url().includes("/fileaccess/api/access/batchCreate"),
+        { timeout: 60000 },
+      ).then(async (response) => {
+        let payload = null;
+        try { payload = await response.json(); } catch (_) { /* non-JSON response */ }
+        const explicitFailure = payload && (
+          (typeof payload.code === "number" && payload.code !== 0)
+          || (typeof payload.ret === "number" && payload.ret !== 0)
+          || payload.success === false
+        );
+        // Different deployments wrap the success payload differently (code,
+        // ret, or just an HTTP 2xx response). Only an explicit business
+        // failure should trigger a retry.
+        if (response.ok() && !explicitFailure) {
+          return { type: "success", message: `batchCreate ${response.status()}` };
+        }
+        const message = payload?.message || payload?.msg || "提交接口失败";
+        return { type: "failure", message };
+      }).catch(() => null);
       await submitButton.click();
-      const submitResult = await waitForSubmitNavigationOrFailure(page, config.successUrl);
+      const submitResult = await Promise.race([
+        batchResponse,
+        waitForSubmitNavigationOrFailure(page, config.successUrl),
+      ]);
       if (submitResult?.type === "success") {
         submitSuccessMessage = submitResult.message;
         break;

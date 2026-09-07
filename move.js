@@ -46,19 +46,28 @@ for (const file of files) {
     ? path.join(destinations[idType], "done")
     : destinations[idType];
   fs.mkdirSync(destinationDir, { recursive: true });
-  const destination = path.join(destinationDir, name);
-  if (fs.existsSync(destination)) {
-    console.error(`跳过（目标已存在，不覆盖）：${destination}`);
-    skipped += 1;
-    continue;
+  // DataNexus normalizes dots in the stem to underscores. Apply the same
+  // conversion locally while preserving the final data extension.
+  const extensionMatch = name.match(/\.(?:txt|csv)$/i);
+  const extension = extensionMatch ? extensionMatch[0] : "";
+  const stem = name.slice(0, name.length - extension.length);
+  const targetName = `${stem.replace(/\./g, "_")}${extension}`;
+  let finalName = targetName;
+  let destination = path.join(destinationDir, finalName);
+  for (let prefix = 1; fs.existsSync(destination); prefix += 1) {
+    finalName = `${prefix}${stem.replace(/\./g, "_")}${extension}`;
+    destination = path.join(destinationDir, finalName);
+  }
+  if (finalName !== targetName) {
+    console.log(`检测到移动目标重名，已重命名：${targetName} -> ${finalName}`);
   }
 
   fs.renameSync(file, destination);
   if (isEmpty) {
-    console.log(`检测到空文件，已直接移动到 ${idType}/done：${name}`);
+    console.log(`检测到空文件，已直接移动到 ${idType}/done：${finalName}`);
     movedEmptyToDone += 1;
   } else {
-    console.log(`已移动到 ${idType}：${name}`);
+    console.log(`已移动到 ${idType}：${finalName}`);
     moved += 1;
   }
 }
