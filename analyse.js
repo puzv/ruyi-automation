@@ -94,6 +94,14 @@ async function selectAudience(page, fileName) {
       await row.getAttribute("aria-disabled").catch(() => ""),
       await row.getAttribute("title").catch(() => ""),
     ].join(" ")).toLowerCase();
+    const audienceNumberText = await row.locator(".audience-number").innerText().catch(() => "");
+    const audienceNumber = Number(audienceNumberText.replace(/[,，\s]/g, ""));
+    if (Number.isFinite(audienceNumber) && audienceNumber < 1000) {
+      const error = new Error(`人群规模小于1000（当前规模：${audienceNumber}）`);
+      error.code = "AUDIENCE_TOO_SMALL";
+      error.audienceNumber = audienceNumber;
+      throw error;
+    }
     if (/(计算中|处理中|生成中|processing|pending|disabled|不可用)/i.test(state)) {
       throw new Error(`人群包“${requested}”正在计算中或暂不可用，已停止提交，请稍后重试`);
     }
@@ -114,14 +122,30 @@ async function selectAudience(page, fileName) {
   console.log(`已选中人群包：${requested}${requested === stem ? "" : `（页面名称：${stem}）`}`);
 }
 
+function removeFromAnalyseList(listPath, fileName) {
+  const normalized = withoutExtension(fileName);
+  const todo = readJsonArray(listPath, "分析任务清单");
+  const remaining = todo.filter((name) => (
+    typeof name !== "string" || withoutExtension(name) !== normalized
+  ));
+  writeJsonArray(listPath, remaining);
+  console.log(`人群规模小于1000，已从分析任务清单移除：${fileName}`);
+}
+
 function monitorPage(page) {
   page.on("console", (message) => {
-    if (message.type() === "error" || message.type() === "warning") {
-      console.log(`[页面${message.type()}] ${message.text()}`);
-    }
+    if (message.type() !== "error" && message.type() !== "warning") return;
+    const text = message.text();
+    if (/echartInitEnhance|Cannot override echarts\.init|ad\.qq\.com\/ai\/gw\/ai_customer_service\/v1\/notice\/get/i.test(text)
+      || /Failed to load resource: net::ERR_FAILED/i.test(text)) return;
+    console.log(`[页面${message.type()}] ${text}`);
   });
-  page.on("pageerror", (error) => console.log(`[页面异常] ${error.message}`));
+  page.on("pageerror", (error) => {
+    if (/ad\.qq\.com\/ai\/gw\/ai_customer_service\/v1\/notice\/get|echartInitEnhance|Cannot override echarts\.init/i.test(error.message)) return;
+    console.log(`[页面异常] ${error.message}`);
+  });
   page.on("requestfailed", (request) => {
+    if (request.url().includes("ad.qq.com/ai/gw/ai_customer_service/v1/notice/get")) return;
     console.log(`[请求失败] ${request.method()} ${request.url()}：${request.failure()?.errorText || "未知错误"}`);
   });
   page.on("response", (response) => {
@@ -233,6 +257,12 @@ async function main() {
     await selectInsightFilters(page);
     await submitInsight(page);
     recordDone(donePath, listPath, fileName);
+  } catch (error) {
+    if (error.code === "AUDIENCE_TOO_SMALL") {
+      removeFromAnalyseList(listPath, fileName);
+      return;
+    }
+    throw error;
   } finally {
     await closeBrowserContext(context);
   }
@@ -240,5 +270,5 @@ async function main() {
 
 main().catch((error) => {
   console.error(`分析页面操作失败：${error.message}`);
-  process.exitCode = /找不到|不可用|没有待处理|计算中|处理中|未成功选中|暂不可用/.test(error.message) ? 2 : 1;
+  process.exitCode = /找不到|不可用|没有待处理|计算中|处理中|未成功选中|暂不可用|人群规模小于1000/.test(error.message) ? 2 : 1;
 });
