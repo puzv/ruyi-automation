@@ -9,13 +9,14 @@
     "create": "node createAllGroup.js",
     "analyse": "node analyseAll.js",
     "download": "node downloadAll.js",
-    "test": "node --check config.js && node --check createAllGroup.js"
+    "install-browser": "node scripts/install-browser.js",
+    "test": "node --check config.js && node --check createAllGroup.js && node --check lib/playwright-env.js && node --check scripts/install-browser.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "playwright": "^1.62.1"
+    "playwright": "1.62.1"
   }
 }

@@ -57,6 +57,37 @@ node createAllGroup.js
 
 ```bash
 npm install
+npm run install-browser
 ```
+
+`npm run install-browser` 会根据当前 macOS 的 CPU 架构，从 GitHub Release 下载与
+Playwright `1.62.1` 匹配的 Chromium，并解压到项目内的 `.playwright-browsers/`。
+Apple Silicon 使用 `darwin-arm64`，Intel Mac 使用 `darwin-x64`。浏览器包不放入
+Git 仓库，也不要分发包含登录状态的 `ruyi-profile`。
+
+维护者在每台 Mac 上分别生成对应架构的 Release 资源（M 系列输出 `arm64`，Intel
+输出 `x64`）：
+
+```bash
+test "$(node -p 'process.platform')" = darwin
+ARCH=$(node -p 'process.arch')
+rm -rf .playwright-browsers
+PLAYWRIGHT_BROWSERS_PATH="$PWD/.playwright-browsers" npx playwright install chromium
+tar -czf "chromium-1.62.1-darwin-${ARCH}.tar.gz" -C .playwright-browsers .
+shasum -a 256 "chromium-1.62.1-darwin-${ARCH}.tar.gz"
+```
+
+将两个压缩包通过文件传输工具汇总后，登录 GitHub 并创建 Release：
+
+```bash
+gh auth login
+gh release create playwright-browsers-v1.62.1 \
+  chromium-1.62.1-darwin-arm64.tar.gz \
+  chromium-1.62.1-darwin-x64.tar.gz \
+  --title "Playwright Chromium 1.62.1"
+```
+
+如果该 Release 已存在，改用 `gh release upload playwright-browsers-v1.62.1
+<文件名> --clobber`。发布两个附件后，安装脚本会自动按架构选择。
 
 任务清单 JSON 应放在 `upload/` 目录中，且内容必须是字符串数组。

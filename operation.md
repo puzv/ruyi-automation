@@ -33,7 +33,7 @@ upload/
 ├── idfa/                      IDFA 待上传文件；成功后移入 idfa/done/
 ├── oaid/                      OAID 待上传文件；成功后移入 oaid/done/
 ├── createGroupToDoList.json   待创建人群包
-├── analysetodolist.json       待创建洞察任务
+├── analyseToDoList.json       待创建洞察任务
 ├── done.json                  待下载洞察结果
 └── result/                    下载后的文件
 ```
@@ -63,7 +63,7 @@ upload/
 node uploadAll.js
 ```
 
-流程是：规范文件名（删除 `occupation`/下划线并前置 ID 类型）-> 生成 `createGroupToDoList.json`（仅收录 idfa/oaid，去扩展名）-> `move.js` 按类型移动 -> `upload.js` 每批最多 5 个上传 -> 成功提交后移入对应 `done/`。批处理会循环直到 `idfa/`、`oaid/` 没有待上传文件。登录页、验证码或权限弹窗出现时，在打开的 Chrome 中完成操作并按终端提示回车。
+流程是：规范文件名（删除 `occupation`/下划线并前置 ID 类型）-> 生成 `createGroupToDoList.json`（仅收录 idfa/oaid，去扩展名）-> `move.js` 按类型移动 -> `upload.js` 每批最多 5 个上传 -> 成功提交后移入对应 `done/`。批处理会循环直到 `idfa/`、`oaid/` 没有待上传文件。首次登录需依次完成 DataNexus 和如翼登录；网页控制台会在当前登录窗口关闭后复查状态，再打开下一个站点。登录页、验证码或权限弹窗出现时，在打开的 Chrome 中完成操作并按终端提示继续。
 
 ### 2. 创建人群包
 
@@ -71,7 +71,7 @@ node uploadAll.js
 node createAllGroup.js
 ```
 
-脚本从创建清单取一项，根据名称中的 `idfa`/`oaid` 打开对应页面，勾选已上传文件，使用文件名填写人群名称和描述并提交。成功后追加（去扩展名）到 `analysetodolist.json`，再从 `createGroupToDoList.json` 删除；失败时保留待办项以便重试。
+脚本从创建清单取一项，根据名称中的 `idfa`/`oaid` 打开对应页面，勾选已上传文件，使用文件名填写人群名称和描述并提交。成功后追加（去扩展名）到 `analyseToDoList.json`，再从 `createGroupToDoList.json` 删除；失败时保留待办项以便重试。
 
 ### 3. 创建洞察任务
 
@@ -79,7 +79,7 @@ node createAllGroup.js
 node analyseAll.js
 ```
 
-每轮在 `https://ruyi.qq.com/insight/create` 选择人群包、填入文件名作为任务名，并固定设置：基本信息=全部、工作状态=预测职业类型、地域属性=全部、消费属性=消费水平、设备信息=全部、资产状况=全部。确认跳转到 `/audience-profile/result` 或 `/insight/insight` 后，才将项目从 `analysetodolist.json` 移到 `done.json`。提交成功仅代表任务创建，结果生成可能仍需等待。
+每轮在 `https://ruyi.qq.com/insight/create` 选择人群包、填入文件名作为任务名，并固定设置：基本信息=全部、工作状态=预测职业类型、地域属性=全部、消费属性=消费水平、设备信息=全部、资产状况=全部。确认跳转到 `/audience-profile/result` 或 `/insight/insight` 后，才将项目从 `analyseToDoList.json` 移到 `done.json`。选择人群时若平台返回规模小于 1000，则输出规模并从 `analyseToDoList.json` 移除，不创建洞察任务。提交成功仅代表任务创建，结果生成可能仍需等待。
 
 ### 4. 下载结果
 
@@ -87,12 +87,12 @@ node analyseAll.js
 node downloadAll.js
 ```
 
-脚本从 `done.json` 取任务，在 `https://ruyi.qq.com/audience-profile/result/` 逐页查找，必要时使用页面搜索，再点击“下载数据”。有效下载保存到 `result/`；同名文件自动追加 ` (1)`、` (2)`。只有捕获到有效下载且不是 `success:false` 的接口 JSON 才会从 `done.json` 删除，失败项会保留以便重试。
+脚本从 `done.json` 取任务，在 `https://ruyi.qq.com/audience-profile/result/` 逐页查找，必要时使用页面搜索。点击下载前会检查任务状态；“排队中/计算中/处理中”等状态会跳过并保留待办项。有效下载保存到 `result/`；同名文件自动追加 ` (1)`、` (2)`。只有捕获到有效下载且不是 `success:false` 的接口 JSON 才会从 `done.json` 删除，失败项会保留以便重试。
 
 ## 四、浏览器和并发注意事项
 
 - 运行前完全退出其他使用 `ruyi-profile` 的 Chrome；一次只运行一个批处理。
-- 浏览器以可视模式运行，不要关闭自动打开的窗口或跳到不相关页面。
+- 浏览器默认以后台（无头）模式运行。需要登录、验证码或二次认证时，请设置 `RUYI_HEADLESS=0` 切换为可视调试模式；登录完成后取消该变量即可恢复后台运行。
 - 登录失效、验证码和二次认证需要人工完成。
 - 页面超时通常与网络、登录态或站点改版有关；先检查 Chrome 当前 URL 和提示，再重试，不要直接删除清单项。
 - 上传每批最多 5 个文件，平台还可能限制大小、行数、频率和每日额度。
@@ -103,14 +103,14 @@ node downloadAll.js
 ```bash
 ROOT="$HOME/Downloads/upload"
 cat "$ROOT/createGroupToDoList.json"
-cat "$ROOT/analysetodolist.json"
+cat "$ROOT/analyseToDoList.json"
 cat "$ROOT/done.json"
 find "$ROOT" -maxdepth 3 -type f -print
 ls -lh "$ROOT/result"
 ```
 
 - 创建清单未减少：人群创建未确认成功，修复登录/页面后重跑 `createAllGroup.js`。
-- 分析清单未减少：洞察未提交成功；确认网页没有重复任务后重跑 `analyseAll.js`。
+- 分析清单未减少：洞察未提交成功；确认网页没有重复任务后重跑 `analyseAll.js`。人群规模小于 1000 的项目会自动从分析清单移除，不会写入 `done.json`。
 - `done.json` 未减少：下载未成功；检查结果状态、权限和网络后重跑 `downloadAll.js`。
 - 类型目录仍有文件：仅成功上传才会移动，通常可直接重跑；若 `done/` 已有同名文件，先核对是否重复上传，脚本不会覆盖。
 
@@ -118,7 +118,7 @@ ls -lh "$ROOT/result"
 
 ```bash
 cp "$ROOT/createGroupToDoList.json" "$ROOT/createGroupToDoList.json.bak"
-cp "$ROOT/analysetodolist.json" "$ROOT/analysetodolist.json.bak"
+cp "$ROOT/analyseToDoList.json" "$ROOT/analyseToDoList.json.bak"
 cp "$ROOT/done.json" "$ROOT/done.json.bak"
 ```
 

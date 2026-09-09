@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
+require("./lib/playwright-env");
 const { projectRoot } = require("./config");
 const { requireUploadRoot } = require("./lib/paths");
 const { readJsonArray } = require("./lib/files");

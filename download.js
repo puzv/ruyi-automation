@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+require("./lib/playwright-env");
 const { chromium } = require("playwright");
 const { profileDir, chromePath, urls, resultDirCandidates, uploadRootCandidates } = require("./config");
 const resultUrl = urls.result;

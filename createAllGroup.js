@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
+require("./lib/playwright-env");
 const { profileDir, chromePath, urls, uploadRootCandidates, projectRoot, audienceLimit } = require("./config");
 const { launchBrowser, closeBrowserContext } = require("./lib/browser");
 const { findUploadRoot } = require("./lib/paths");

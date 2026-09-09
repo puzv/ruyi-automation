@@ -2,6 +2,10 @@ auth.json
 chrome-profile/
 node_modules/
 web/node_modules/
+.playwright-browsers/
+.playwright-browsers.backup-*/
+chromium-*.tar.gz
+chromium-*.tar.gz.sha256
 ruyi-profile/*
 !ruyi-profile/.gitkeep
 upload/conclusion/

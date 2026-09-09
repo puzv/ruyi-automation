@@ -2,6 +2,10 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
+// Set the bundled browser path before config's Playwright version detection
+// can require the Playwright package.
+require("./lib/playwright-env");
+
 // 所有脚本共享的运行配置。路径以本配置文件所在目录为基准，便于整体复制和分发。
 const projectRoot = __dirname;
 const uploadRoot = process.env.RUYI_UPLOAD_DIR || path.join(projectRoot, "upload");
