@@ -2,7 +2,8 @@ auth.json
 chrome-profile/
 node_modules/
 web/node_modules/
-.playwright-browsers/
+.playwright-browsers/*
+!.playwright-browsers/.gitkeep
 .playwright-browsers.backup-*/
 chromium-*.tar.gz
 chromium-*.tar.gz.sha256
