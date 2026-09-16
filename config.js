@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const { detectMacArchitecture } = require("./lib/macos-arch");
 
 // Set the bundled browser path before config's Playwright version detection
 // can require the Playwright package.
@@ -18,6 +19,26 @@ const defaultChromePath = process.platform === "win32"
     : "/usr/bin/google-chrome";
 
 function detectChromePath() {
+  const detectedArchitecture = detectMacArchitecture().arch;
+  if (detectedArchitecture) {
+    try {
+      const chromiumRevision = require("playwright-core/browsers.json")
+        .browsers.find((browser) => browser.name === "chromium")?.revision;
+      const bundled = chromiumRevision && path.join(
+        projectRoot,
+        ".playwright-browsers",
+        `chromium-${chromiumRevision}`,
+        `chrome-mac-${detectedArchitecture}`,
+        "Google Chrome for Testing.app",
+        "Contents",
+        "MacOS",
+        "Google Chrome for Testing",
+      );
+      if (bundled && fs.existsSync(bundled)) return bundled;
+    } catch (_) {
+      // Fall through to Playwright/system browser discovery below.
+    }
+  }
   // Prefer Playwright's tested Chromium build when available. Recent system
   // Chrome releases can abort with SIGILL under Playwright's persistent,
   // remote-debugging mode (the page then reports `Target page, context or

@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const { spawnSync } = require("child_process");
 const { Readable } = require("stream");
 const { pipeline } = require("stream/promises");
+const { VALID_ARCHES, detectMacArchitecture } = require("../lib/macos-arch");
 
 const projectRoot = path.resolve(__dirname, "..");
 const defaultReleaseUrl = "https://gitee.com/puzvv/ruyi-automation/releases/download/playwright-browsers-v1.1.6";
@@ -14,6 +15,8 @@ function parseArgs(argv) {
     manifestPath: "",
     partsDir: "",
     browserDir: path.join(projectRoot, ".playwright-browsers"),
+    arch: process.env.RUYI_BROWSER_ARCH || "",
+    archSource: process.env.RUYI_BROWSER_ARCH ? "RUYI_BROWSER_ARCH" : "",
     force: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -22,12 +25,17 @@ function parseArgs(argv) {
     else if (arg === "--manifest") options.manifestPath = path.resolve(argv[++index] || "");
     else if (arg === "--parts-dir") options.partsDir = path.resolve(argv[++index] || "");
     else if (arg === "--browser-dir") options.browserDir = path.resolve(argv[++index] || "");
+    else if (arg === "--arch") {
+      options.arch = String(argv[++index] || "").toLowerCase();
+      options.archSource = "命令行覆盖";
+    }
     else if (arg === "--force") options.force = true;
     else throw new Error(`未知参数：${arg}`);
   }
   if (options.manifestPath && !options.partsDir && !options.baseUrl) {
     throw new Error("使用本地 --manifest 时，还需要 --parts-dir 或 --base-url");
   }
+  if (options.arch && !VALID_ARCHES.has(options.arch)) throw new Error("--arch 只能是 arm64 或 x64");
   return options;
 }
 
@@ -111,10 +119,14 @@ function combineParts(files, archivePath) {
 }
 
 async function main() {
-  if (process.platform !== "darwin" || !["arm64", "x64"].includes(process.arch)) {
-    throw new Error(`当前仅支持 macOS arm64/x64，检测到 ${process.platform}-${process.arch}`);
-  }
   const options = parseArgs(process.argv.slice(2));
+  if (process.platform !== "darwin") throw new Error(`当前仅支持 macOS，检测到 ${process.platform}`);
+  const detected = detectMacArchitecture();
+  const architecture = options.arch || detected.arch;
+  if (!architecture || !VALID_ARCHES.has(architecture)) {
+    throw new Error(`无法识别 Mac 芯片架构（Node=${process.arch}，来源=${detected.source}）。可使用 --arch arm64 或 --arch x64 指定`);
+  }
+  console.log(`浏览器架构：${architecture}（${options.archSource || detected.source}，Node=${process.arch}）`);
   const expectedVersion = require(path.join(projectRoot, "node_modules/playwright/package.json")).version;
   const expectedRevision = require(path.join(projectRoot, "node_modules/playwright-core/browsers.json"))
     .browsers.find((browser) => browser.name === "chromium")?.revision;
@@ -131,21 +143,26 @@ async function main() {
     if (!/^\d+$/.test(String(manifest.chromiumRevision)) || String(manifest.chromiumRevision) !== String(expectedRevision)) {
       throw new Error(`Chromium revision 不匹配：当前 ${expectedRevision}，清单 ${manifest.chromiumRevision}`);
     }
-    const platform = `darwin-${process.arch}`;
+    const platform = `darwin-${architecture}`;
     const selected = manifest.platforms?.[platform];
     if (!selected?.parts?.length) throw new Error(`清单中没有 ${platform} 浏览器包`);
     if (!selected.archive || path.basename(selected.archive) !== selected.archive) throw new Error(`非法压缩包文件名：${selected.archive}`);
     if (!selected.size || !/^[a-f0-9]{64}$/i.test(selected.sha256)) throw new Error("完整压缩包校验字段无效");
 
     const revisionDir = path.join(browserRoot, `chromium-${manifest.chromiumRevision}`);
-    const executableDir = process.arch === "arm64" ? "chrome-mac-arm64" : "chrome-mac-x64";
+    const executableDir = architecture === "arm64" ? "chrome-mac-arm64" : "chrome-mac-x64";
     const executable = path.join(revisionDir, executableDir, "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing");
+    const otherArchitecture = architecture === "arm64" ? "x64" : "arm64";
+    const otherExecutable = path.join(revisionDir, `chrome-mac-${otherArchitecture}`, "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing");
     if (fs.existsSync(executable) && !options.force) {
       console.log(`浏览器已安装：${executable}`);
       return;
     }
-    if (fs.existsSync(revisionDir) && !options.force) {
+    if (fs.existsSync(revisionDir) && !options.force && !fs.existsSync(otherExecutable)) {
       throw new Error(`检测到不完整目录 ${revisionDir}，确认可替换后增加 --force`);
+    }
+    if (fs.existsSync(otherExecutable) && !options.force) {
+      console.log(`检测到 ${otherArchitecture} 浏览器，将在校验新包后替换为 ${architecture}`);
     }
 
     const partFiles = [];

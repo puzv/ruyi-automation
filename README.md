@@ -104,8 +104,14 @@ GITEE_BROWSER_RELEASE_URL=https://gitee.com/puzvv/ruyi-automation/releases/downl
   npm run browser:install
 ```
 
-安装器会自动识别 Apple Silicon (`arm64`) 或 Intel (`x64`)，逐片下载并校验每片 SHA-256，
+安装器会检测真实 macOS 硬件架构，而不是只看 Node.js 进程架构，因此即使 Apple Silicon
+通过 Rosetta 运行 Intel 版 Node，也会下载 `arm64` 浏览器。安装器逐片下载并校验每片 SHA-256，
 按顺序拼接后再次校验完整 ZIP，最后解压到 `.playwright-browsers/`。已有完整浏览器不会重复
-安装；需要覆盖时增加 `--force`。
+安装；检测到之前误装的另一架构浏览器时，会在新包校验完成后自动替换。只有目录不完整且
+无法判断原架构时才需要增加 `--force`。如果系统无法读取架构，可显式指定：
+
+```bash
+npm run browser:install -- --arch arm64
+```
 
 任务清单 JSON 应放在 `upload/` 目录中，且内容必须是字符串数组。

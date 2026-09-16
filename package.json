@@ -11,7 +11,7 @@
     "download": "node downloadAll.js",
     "browser:split": "node scripts/split-playwright-browsers.js",
     "browser:install": "node scripts/install-playwright-browser.js",
-    "test": "node --check config.js && node --check createAllGroup.js && node --check lib/playwright-env.js && node --check scripts/split-playwright-browsers.js && node --check scripts/install-playwright-browser.js"
+    "test": "node --check config.js && node --check createAllGroup.js && node --check lib/playwright-env.js && node --check lib/macos-arch.js && node --check scripts/split-playwright-browsers.js && node --check scripts/install-playwright-browser.js && node test/macos-arch.test.js"
   },
   "keywords": [],
   "author": "",
