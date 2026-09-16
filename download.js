@@ -31,9 +31,111 @@ function getResultDir() {
   return resultDir;
 }
 
+function normalizeTaskName(value) {
+  return path.basename(String(value || ""))
+    .replace(/\.(?:txt|csv)$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getExpectedTitles(fileName, selectedTitle) {
+  return [...new Set([fileName, selectedTitle]
+    .filter(Boolean)
+    .flatMap((value) => [path.basename(String(value)), normalizeTaskName(value)])
+    .map((value) => value.replace(/\s+/g, " ").trim())
+    .filter(Boolean))];
+}
+
+const UNAVAILABLE_INSIGHT_STATUSES = new Set([
+  "PROCESSING", "LOCKING", "FROZEN", "ERROR", "PENDING", "WAITING", "GENERATING", "FAILED",
+]);
+
+async function fetchInsightStatus(page, searchKeyword, expectedTitles) {
+  const keyword = normalizeTaskName(searchKeyword);
+  const request = {
+    page: 1,
+    pageSize: 100,
+    sortField: "lastModifiedTime",
+    sortType: "DESC",
+    filtering: [
+      { field: "keyword", operator: "CONTAINS", values: [keyword] },
+      { field: "type", operator: "IN", values: ["TAG"] },
+      { field: "status", operator: "IN", values: ["SUCCESS", "PROCESSING", "ERROR", "FROZEN", "LOCKING"] },
+    ],
+  };
+  const response = await page.evaluate(async (payload) => {
+    const result = await fetch("/api/insight/list", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!result.ok) throw new Error(`洞悉列表接口返回 HTTP ${result.status}`);
+    return result.json();
+  }, request);
+  if (response?.success === false || (response?.code != null && response.code !== 0)) {
+    throw new Error(`洞悉列表接口失败：${response?.message || `code=${response?.code}`}`);
+  }
+
+  const expected = new Set((expectedTitles || [searchKeyword]).map(normalizeTaskName).filter(Boolean));
+  const items = response?.data?.listing?.items || [];
+  const matched = items.filter((item) => expected.has(normalizeTaskName(item?.name)));
+  const latest = matched[0];
+  return {
+    status: String(latest?.status || latest?.frontStatus || "").toUpperCase(),
+    matchedCount: matched.length,
+    item: latest || null,
+  };
+}
+
+async function markDownloadTarget(page, expectedTitles = []) {
+  const titles = [...new Set(expectedTitles.map((title) => String(title || "").replace(/\s+/g, " ").trim()).filter(Boolean))];
+  return page.evaluate(({ expectedTitles: names }) => {
+    const normalized = new Set(names);
+    const visible = (element) => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+    };
+    const text = (element) => String(element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
+    document.querySelectorAll('[data-ruyi-dl-target="1"]').forEach((element) => {
+      element.removeAttribute("data-ruyi-dl-target");
+    });
+
+    const controls = [...document.querySelectorAll('button, a, [role="button"]')]
+      .filter((element) => visible(element) && text(element) === "下载数据");
+    if (!controls.length) return { ok: false, reason: "no-download-control" };
+
+    const titleNodes = [...document.querySelectorAll("body *")].filter((element) => {
+      if (!visible(element) || !normalized.has(text(element))) return false;
+      // The left result list also contains the requested name. It must never
+      // be accepted as proof that the asynchronously loaded detail is ready.
+      if (element.closest('[class*="listItem"], [class*="list-item"], aside, nav')) return false;
+      return ![...element.children].some((child) => normalized.has(text(child)));
+    });
+    if (!titleNodes.length) return { ok: false, reason: "target-detail-not-shown" };
+
+    const matches = [];
+    for (const control of controls) {
+      let scope = control.parentElement;
+      let matchedTitle = null;
+      while (scope && scope !== document.body && scope !== document.documentElement) {
+        matchedTitle = titleNodes.find((titleNode) => scope.contains(titleNode));
+        if (matchedTitle) break;
+        scope = scope.parentElement;
+      }
+      if (matchedTitle) matches.push({ control, title: text(matchedTitle) });
+    }
+    if (matches.length !== 1) {
+      return { ok: false, reason: matches.length ? `ambiguous-controls(${matches.length})` : "target-detail-not-shown" };
+    }
+    matches[0].control.setAttribute("data-ruyi-dl-target", "1");
+    return { ok: true, title: matches[0].title };
+  }, { expectedTitles: titles });
+}
+
 async function selectTask(page, fileName) {
   const requested = path.basename(fileName);
-  const stem = requested.replace(/\.(?:txt|csv)$/i, "");
+  const stem = normalizeTaskName(requested);
   // The result list is paginated (often hundreds of pages), so always use the
   // built-in search rather than walking pages one by one.
   const searchTrigger = page.getByText("搜索", { exact: true }).first();
@@ -85,35 +187,47 @@ async function selectTask(page, fileName) {
       return active && active.innerText.trim() === expected;
     }, title, { timeout: 30000 });
     console.log(`已选择分析任务：${title}`);
-    return;
+    return title;
   }
   throw new Error(`分析任务列表中找不到：${requested}`);
 }
 
-async function ensureTaskReady(page, fileName) {
+async function ensureTaskReady(page, fileName, selectedTitle) {
   const requested = path.basename(fileName);
-  // The result detail loads asynchronously after the list item becomes active.
-  // A queued/processing task still exposes a "下载数据" button, but the
-  // server responds with a 48-byte JSON error disguised as an .xls download.
-  const status = page.locator('[class*="waitTag"]:visible, [class*="infoTag"]:visible, [class*="successTag"]:visible, [class*="errorTag"]:visible').last();
-  const deadline = Date.now() + 10000;
-  let statusText = "";
-  while (!statusText && Date.now() < deadline) {
-    // Keep the probe bounded when this optional status marker is absent on a
-    // page variant; Locator.innerText otherwise waits Playwright's 30s default.
-    statusText = (await status.innerText({ timeout: 500 }).catch(() => "")).replace(/\s+/g, " ").trim();
-    if (!statusText) await page.waitForTimeout(250);
+  const expectedTitles = getExpectedTitles(requested, selectedTitle);
+  let result;
+  try {
+    result = await fetchInsightStatus(page, normalizeTaskName(requested), expectedTitles);
+  } catch (error) {
+    throw new Error(`下载未就绪：无法确认目标任务“${requested}”的接口状态（${error.message}）`);
   }
-  if (/(排队中|计算中|处理中|生成中|失败|错误|processing|pending|error)/i.test(statusText)) {
-    throw new Error(`下载未就绪：分析任务“${requested}”当前状态为“${statusText}”，请等待结果生成后重试`);
+  if (!result.matchedCount) {
+    throw new Error(`下载未就绪：洞悉列表接口未返回目标任务“${requested}”`);
   }
-  if (statusText) console.log(`分析任务状态：${statusText}`);
+  if (UNAVAILABLE_INSIGHT_STATUSES.has(result.status)) {
+    throw new Error(`下载未就绪：分析任务“${requested}”当前状态为“${result.status}”，请等待结果生成后重试`);
+  }
+  if (result.status !== "SUCCESS") {
+    throw new Error(`下载未就绪：分析任务“${requested}”状态未知（${result.status || "空"}）`);
+  }
+  console.log(`分析任务状态：${result.status}${result.matchedCount > 1 ? `（同名 ${result.matchedCount} 条，采用最新记录）` : ""}`);
 }
 
-async function clickDownload(page) {
-  const downloadText = page.getByText("下载数据", { exact: true }).last();
-  const button = downloadText.locator("xpath=ancestor::button[1]");
-  const download = await button.count() ? button : downloadText;
+async function clickDownload(page, expectedTitles = []) {
+  const deadline = Date.now() + 15000;
+  let target = { ok: false, reason: "not-checked" };
+  while (Date.now() < deadline) {
+    target = await markDownloadTarget(page, expectedTitles);
+    if (target.ok) break;
+    await page.waitForTimeout(250);
+  }
+  if (!target.ok) {
+    throw new Error(`下载未就绪：无法定位目标任务详情区（${target.reason}），已停止提交以避免下载到其他任务的结果`);
+  }
+  const download = page.locator('[data-ruyi-dl-target="1"]').first();
+  if (!await download.count()) {
+    throw new Error("下载未就绪：目标任务的下载控件在点击前消失，请稍后重试");
+  }
   await download.waitFor({ state: "visible", timeout: 30000 });
   // The UI renders a custom button whose disabled state belongs to an
   // ancestor element, while the text locator resolves to an inner <div>.
@@ -221,16 +335,30 @@ async function main() {
     await page.bringToFront();
     await page.goto(resultUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
     await page.waitForTimeout(1500);
-    await selectTask(page, fileName);
-    await ensureTaskReady(page, fileName);
-    if (!await clickDownload(page)) throw new Error("下载未成功，保留完成清单中的文件名以便重试");
+    const selectedTitle = await selectTask(page, fileName);
+    const expectedTitles = getExpectedTitles(fileName, selectedTitle);
+    await ensureTaskReady(page, fileName, selectedTitle);
+    if (!await clickDownload(page, expectedTitles)) throw new Error("下载未成功，保留完成清单中的文件名以便重试");
     removeDoneFile(donePath, fileName);
   } finally {
     await closeBrowserContext(context);
   }
 }
 
-main().catch((error) => {
-  console.error(`下载任务失败：${error.message}`);
-  process.exitCode = /下载未成功|下载未就绪|排队中|计算中|处理中|生成中|不可用/.test(error.message) ? 2 : 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(`下载任务失败：${error.message}`);
+    process.exitCode = /下载未成功|下载未就绪|排队中|计算中|处理中|生成中|不可用/.test(error.message) ? 2 : 1;
+  });
+}
+
+module.exports = {
+  UNAVAILABLE_INSIGHT_STATUSES,
+  clickDownload,
+  ensureTaskReady,
+  fetchInsightStatus,
+  getExpectedTitles,
+  markDownloadTarget,
+  normalizeTaskName,
+  selectTask,
+};
