@@ -9,7 +9,9 @@
     "create": "node createAllGroup.js",
     "analyse": "node analyseAll.js",
     "download": "node downloadAll.js",
-    "test": "node --check config.js && node --check createAllGroup.js && node --check lib/playwright-env.js"
+    "browser:split": "node scripts/split-playwright-browsers.js",
+    "browser:install": "node scripts/install-playwright-browser.js",
+    "test": "node --check config.js && node --check createAllGroup.js && node --check lib/playwright-env.js && node --check scripts/split-playwright-browsers.js && node --check scripts/install-playwright-browser.js"
   },
   "keywords": [],
   "author": "",

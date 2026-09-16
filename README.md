@@ -72,4 +72,40 @@ npm install
 确认浏览器目录已经放好后即可运行项目；不再需要执行额外的浏览器安装命令。浏览器包
 不要提交到 Git 仓库，也不要分发包含登录状态的 `ruyi-profile`。
 
+### 通过 Gitee Release 分发浏览器
+
+Gitee 单个附件限制 100 MB。维护者可将 `1/` 中的两个浏览器 ZIP 按默认 90 MiB 切片：
+
+```bash
+npm run browser:split
+```
+
+命令会在 `browser-release/` 生成两种 Mac 架构的分片和 `browser-manifest.json`。将该目录内
+的所有文件上传到同一个 Gitee Release；不要上传原始的大 ZIP。默认每个架构生成两个分片，
+安装器以清单为准，不依赖固定分片数量。
+
+当前浏览器分片已发布到 `puzvv/ruyi-automation` 的 `playwright-browsers-v1.1.6` Release。
+用户安装依赖后直接运行：
+
+```bash
+npm run browser:install
+```
+
+安装器默认使用以下附件下载基址：
+
+```text
+https://gitee.com/puzvv/ruyi-automation/releases/download/playwright-browsers-v1.1.6
+```
+
+以后发布新标签时，可以通过环境变量临时覆盖地址：
+
+```bash
+GITEE_BROWSER_RELEASE_URL=https://gitee.com/puzvv/ruyi-automation/releases/download/新标签 \
+  npm run browser:install
+```
+
+安装器会自动识别 Apple Silicon (`arm64`) 或 Intel (`x64`)，逐片下载并校验每片 SHA-256，
+按顺序拼接后再次校验完整 ZIP，最后解压到 `.playwright-browsers/`。已有完整浏览器不会重复
+安装；需要覆盖时增加 `--force`。
+
 任务清单 JSON 应放在 `upload/` 目录中，且内容必须是字符串数组。
