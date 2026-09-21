@@ -10,13 +10,14 @@ const projectRoot = path.resolve(__dirname, "..");
 const defaultReleaseUrl = "https://gitee.com/puzvv/ruyi-automation/releases/download/playwright-browsers-v1.1.6";
 
 function parseArgs(argv) {
+  const envArch = String(process.env.RUYI_BROWSER_ARCH || "").trim().toLowerCase();
   const options = {
     baseUrl: process.env.GITEE_BROWSER_RELEASE_URL || defaultReleaseUrl,
     manifestPath: "",
     partsDir: "",
     browserDir: path.join(projectRoot, ".playwright-browsers"),
-    arch: process.env.RUYI_BROWSER_ARCH || "",
-    archSource: process.env.RUYI_BROWSER_ARCH ? "RUYI_BROWSER_ARCH" : "",
+    arch: envArch,
+    archSource: envArch ? "RUYI_BROWSER_ARCH" : "",
     force: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -26,7 +27,7 @@ function parseArgs(argv) {
     else if (arg === "--parts-dir") options.partsDir = path.resolve(argv[++index] || "");
     else if (arg === "--browser-dir") options.browserDir = path.resolve(argv[++index] || "");
     else if (arg === "--arch") {
-      options.arch = String(argv[++index] || "").toLowerCase();
+      options.arch = String(argv[++index] || "").trim().toLowerCase();
       options.archSource = "命令行覆盖";
     }
     else if (arg === "--force") options.force = true;
