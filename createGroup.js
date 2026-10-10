@@ -12,6 +12,7 @@ const { navigateWithLogin } = require("./lib/login");
 const groupUrls = {
   idfa: urls.idfaUpload,
   oaid: urls.oaidUpload,
+  pn: urls.pnUpload,
 };
 
 function withoutExtension(fileName) {
@@ -20,6 +21,7 @@ function withoutExtension(fileName) {
 
 function getGroupType(fileName) {
   const lowerName = path.basename(fileName).toLowerCase();
+  if (lowerName.includes("pn")) return "pn";
   if (lowerName.includes("idfa")) return "idfa";
   if (lowerName.includes("oaid")) return "oaid";
   return null;
@@ -194,7 +196,7 @@ async function main() {
   const { fileName, todoPath, analysePath, analysed } = readNextFileName(uploadRoot);
   const groupType = getGroupType(fileName);
   if (!groupType) {
-    console.error(`文件名中不含 idfa 或 oaid，无法确定创建地址：${fileName}`);
+    console.error(`文件名中不含 idfa、oaid 或 pn，无法确定创建地址：${fileName}`);
     process.exitCode = 1;
     return;
   }

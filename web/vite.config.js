@@ -80,10 +80,10 @@ function readFirstTaskCount(fileNames) {
 }
 
 function getWorkspaceStatus() {
-  // Uploads move from raw/ into idfa/ or oaid/ before the browser step. Count
+  // Uploads move from raw/ into idfa/, oaid/ or pn/ before the browser step. Count
   // both locations so the queue reflects files that are still uploadable;
   // files under */done are already complete and must not be included.
-  const pendingUploadCount = ['raw', 'idfa', 'oaid'].reduce((count, folderName) => {
+  const pendingUploadCount = ['raw', 'idfa', 'oaid', 'pn'].reduce((count, folderName) => {
     const folder = path.join(uploadRoot, folderName)
     if (!fs.existsSync(folder)) return count
     return count + fs.readdirSync(folder)
@@ -91,7 +91,7 @@ function getWorkspaceStatus() {
       .filter((name) => {
         const file = path.join(folder, name)
         if (!fs.statSync(file).isFile()) return false
-        if (folderName === 'raw') return /(?:idfa|oaid)/i.test(name)
+        if (folderName === 'raw') return /(?:idfa|oaid|pn)/i.test(name)
         return new RegExp(folderName, 'i').test(name)
       })
       .length
@@ -327,7 +327,9 @@ async function inspectLoginStatus() {
 }
 
 async function inspectPlatformFiles(type, names) {
-  const url = type === 'idfa'
+  const url = type === 'pn'
+    ? (process.env.RUYI_URL_PN_UPLOAD || 'https://ruyi.qq.com/audience/dnUpload?idType=MD5_MOBILE_PHONE')
+    : type === 'idfa'
     ? 'https://ruyi.qq.com/audience/dnUpload?idType=MD5_IFA'
     : 'https://ruyi.qq.com/audience/dnUpload?idType=MD5_OAID'
   const context = trackContext(await launchPlatformBrowser())
@@ -621,12 +623,17 @@ function apiPlugin() {
         const names = readTaskItems(['createGroupToDoList.json', 'creategrouptodolist.json'])
         const analyseNames = readTaskItems(['analyseToDoList.json'])
         const doneNames = readTaskItems(['done.json'])
-        const groups = { idfa: names.filter((name) => /idfa/i.test(name)), oaid: names.filter((name) => /oaid/i.test(name)) }
-        const result = { idfaPending: 0, oaidPending: 0, insightPending: 0, resultPending: 0 }
+        const groups = {
+          pn: names.filter((name) => /pn/i.test(name)),
+          idfa: names.filter((name) => !/pn/i.test(name) && /idfa/i.test(name)),
+          oaid: names.filter((name) => !/pn|idfa/i.test(name) && /oaid/i.test(name)),
+        }
+        const result = { idfaPending: 0, oaidPending: 0, pnPending: 0, insightPending: 0, resultPending: 0 }
         const errors = []
         try {
           // 按工作流顺序逐个访问平台地址；单个阶段失败不阻断后续阶段。
           const checks = [
+            ['PN 文件列表', async () => { if (groups.pn.length) result.pnPending = (await inspectPlatformFiles('pn', groups.pn)).missingCount }],
             ['IDFA 文件列表', async () => { if (groups.idfa.length) result.idfaPending = (await inspectPlatformFiles('idfa', groups.idfa)).missingCount }],
             ['OAID 文件列表', async () => { if (groups.oaid.length) result.oaidPending = (await inspectPlatformFiles('oaid', groups.oaid)).missingCount }],
             ['人群列表', async () => { if (analyseNames.length) result.insightPending = await inspectAnalyseAudience(analyseNames) }],
@@ -650,7 +657,7 @@ function apiPlugin() {
           for (const file of req.files || []) {
             const relative = decodeUploadedFileName(file.originalname || file.filename).replace(/^[/\\]+/, '')
             const fileName = path.basename(relative)
-            if (fileName.startsWith('.') || !/(?:idfa|oaid)/i.test(fileName) || !/\.(?:txt|csv)$/i.test(fileName)) {
+            if (fileName.startsWith('.') || !/(?:idfa|oaid|pn)/i.test(fileName) || !/\.(?:txt|csv)$/i.test(fileName)) {
               skipped += 1
               continue
             }

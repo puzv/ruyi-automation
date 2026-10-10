@@ -6,7 +6,7 @@ const { requireUploadRoot } = require("./lib/paths");
 const { checkPreflight } = require("./lib/preflight");
 
 function getPendingFiles(uploadRoot) {
-  return ["idfa", "oaid"].flatMap((idType) => {
+  return ["idfa", "oaid", "pn"].flatMap((idType) => {
     const folder = path.join(uploadRoot, idType);
     if (!fs.existsSync(folder)) return [];
 
@@ -32,15 +32,15 @@ function normalizeRawFileNames(uploadRoot) {
       const sourceName = path.basename(file);
       const extension = path.extname(sourceName);
       const stem = path.basename(sourceName, extension);
-      const idMatch = stem.match(/(idfa|oaid)/i);
+      const idMatch = stem.match(/pn/i) || stem.match(/(idfa|oaid)/i);
 
       // 仅规范 ID 文件；不相关文件保持原名，仍由 move.js 负责跳过。
       if (!idMatch && !/occupation/i.test(stem)) return null;
 
-      // 删除 occupation 和下划线，再把 idfa/oaid 统一放到文件名最前面。
+      // 删除 occupation 和下划线，再把 idfa/oaid/pn 统一放到文件名最前面。
       // 平台名称通常会截取前 30 个字符，因此将中文集中放到 ID 类型后，
       // 让职业/人群等中文标识尽可能保留在平台名称中。
-      const idType = idMatch ? idMatch[1].toLowerCase() : null;
+      const idType = idMatch ? idMatch[0].toLowerCase() : null;
       let normalizedStem = stem.replace(/occupation/gi, "");
       if (idType) normalizedStem = normalizedStem.replace(new RegExp(idType, "i"), "");
       normalizedStem = normalizedStem.replace(/_/g, "");
@@ -83,7 +83,7 @@ function writeRawFileList(uploadRoot) {
     : [];
   if (!Array.isArray(existing)) throw new Error(`创建任务清单必须是文件名数组：${manifestPath}`);
 
-  const discovered = ["raw", "idfa", "oaid"].flatMap((folderName) => {
+  const discovered = ["raw", "idfa", "oaid", "pn"].flatMap((folderName) => {
     const folder = path.join(uploadRoot, folderName);
     if (!fs.existsSync(folder)) return [];
     return fs.readdirSync(folder)
@@ -91,7 +91,7 @@ function writeRawFileList(uploadRoot) {
       .filter((file) => fs.statSync(file).isFile())
       .filter((file) => {
         const lowerName = path.basename(file).toLowerCase();
-        return lowerName.includes("idfa") || lowerName.includes("oaid");
+        return lowerName.includes("idfa") || lowerName.includes("oaid") || lowerName.includes("pn");
       })
       .map((file) => path.basename(file).replace(/\.(?:txt|csv)$/i, ""));
   });

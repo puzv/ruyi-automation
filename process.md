@@ -8,7 +8,7 @@
 raw/*
   -> uploadAll.js
      -> 清理 occupation、生成 createGroupToDoList.json
-     -> move.js 按 idfa/oaid 分目录
+     -> move.js 按 idfa/oaid/pn 分目录
      -> upload.js（每批最多 5 个，成功后移入 */done/）
   -> createAllGroup.js -> createGroup.js
      -> 选择上传文件、填写人群信息、提交
@@ -29,7 +29,7 @@ raw/*
 
 ### `move.js`
 
-纯文件操作：扫描 `raw/`，文件名含 `idfa` 移入 `idfa/`，含 `oaid` 移入 `oaid/`，其他跳过；目标已存在时不覆盖。不访问网络，也不写 JSON。
+纯文件操作：扫描 `raw/`，文件名含 `pn` 优先移入 `pn/`，否则按 `idfa`、`oaid` 分类；空文件直接进入对应 `done/`，重名文件添加数字前缀。不访问网络，也不写 JSON。
 
 ### `upload.js`
 
@@ -37,7 +37,7 @@ raw/*
 
 ### `createAllGroup.js` / `createGroup.js`
 
-前者循环并检查清单是否减少，后者完成单项页面交互：按关键字选择 IDFA/OAID 地址，从清单匹配文件（兼容带/不带扩展名），勾选文件，填写名称和描述，提交后更新两个清单。
+前者循环并检查清单是否减少，后者完成单项页面交互：按关键字选择 IDFA/OAID/PN 地址，从清单匹配文件（兼容带/不带扩展名），勾选文件，填写名称和描述，提交后更新两个清单。
 
 ### `analyseAll.js` / `analyse.js`
 

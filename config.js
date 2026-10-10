@@ -106,9 +106,11 @@ module.exports = {
     audience: envUrl("AUDIENCE", "https://ruyi.qq.com/audience"),
     idfaUpload: envUrl("IDFA_UPLOAD", "https://ruyi.qq.com/audience/dnUpload?idType=MD5_IFA"),
     oaidUpload: envUrl("OAID_UPLOAD", "https://ruyi.qq.com/audience/dnUpload?idType=MD5_OAID"),
+    pnUpload: envUrl("PN_UPLOAD", "https://ruyi.qq.com/audience/dnUpload?idType=MD5_MOBILE_PHONE"),
     insightCreate: envUrl("INSIGHT_CREATE", "https://ruyi.qq.com/insight/create"),
     result: envUrl("RESULT", "https://ruyi.qq.com/audience-profile/result/"),
     idfaImport: envUrl("IDFA_IMPORT", "https://datanexus.qq.com/web/workbench/file/import?from=dmp_MD5_IFA"),
     oaidImport: envUrl("OAID_IMPORT", "https://datanexus.qq.com/web/workbench/file/import?from=dmp_MD5_OAID"),
+    pnImport: envUrl("PN_IMPORT", "https://datanexus.qq.com/web/workbench/file/import?from=dmp_MD5_MOBILE_PHONE"),
   },
 };

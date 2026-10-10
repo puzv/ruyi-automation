@@ -19,6 +19,7 @@ if (!fs.existsSync(rawDir)) {
 const destinations = {
   idfa: path.join(uploadRoot, "idfa"),
   oaid: path.join(uploadRoot, "oaid"),
+  pn: path.join(uploadRoot, "pn"),
 };
 Object.values(destinations).forEach((dir) => fs.mkdirSync(dir, { recursive: true }));
 
@@ -32,11 +33,12 @@ let skipped = 0;
 for (const file of files) {
   const name = path.basename(file);
   const lowerName = name.toLowerCase();
-  const idType = lowerName.includes("idfa") ? "idfa" :
+  const idType = lowerName.includes("pn") ? "pn" :
+    lowerName.includes("idfa") ? "idfa" :
     lowerName.includes("oaid") ? "oaid" : null;
 
   if (!idType) {
-    console.log(`跳过（文件名不含 idfa 或 oaid）：${name}`);
+    console.log(`跳过（文件名不含 idfa、oaid 或 pn）：${name}`);
     skipped += 1;
     continue;
   }

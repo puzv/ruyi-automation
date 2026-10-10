@@ -13,6 +13,7 @@
 │   ├── raw/                   # 待整理原始文件
 │   ├── idfa/                  # IDFA 待上传文件
 │   ├── oaid/                  # OAID 待上传文件
+│   ├── pn/                    # PN 手机号 MD5 待上传文件
 │   └── result/                # 下载结果
 ├── ruyi-profile/              # 本机登录状态和浏览器配置
 ├── move.js

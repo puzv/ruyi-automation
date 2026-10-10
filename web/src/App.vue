@@ -25,7 +25,7 @@ const notice = ref('等待操作')
 const running = ref('')
 const jobId = ref('')
 const workspaceStatus = ref('等待操作')
-const statusCounts = ref({ rawCount: 0, createCount: 0, analyseCount: 0, doneCount: 0, idfaPending: 0, oaidPending: 0, insightPending: 0, resultPending: 0, createNames: [] })
+const statusCounts = ref({ rawCount: 0, createCount: 0, analyseCount: 0, doneCount: 0, idfaPending: 0, oaidPending: 0, pnPending: 0, insightPending: 0, resultPending: 0, createNames: [] })
 const jobLog = ref('')
 const createExpanded = ref(true)
 const insightExpanded = ref(true)
@@ -81,7 +81,7 @@ function startLoginPolling() {
 
 const actions = [
   { label: '选择文件夹', hint: '准备原始数据文件', icon: FolderOpen, tone: 'mint' },
-  { label: '上传文件', hint: '提交 IDFA / OAID 数据', icon: ArrowUpFromLine, tone: 'coral' },
+  { label: '上传文件', hint: '提交 IDFA / OAID / PN 数据', icon: ArrowUpFromLine, tone: 'coral' },
   { label: '创建人群', hint: '生成可用人群包', icon: UsersRound, tone: 'blue' },
   { label: '人群洞悉', hint: '创建洞察分析任务', icon: BarChart3, tone: 'gold' },
   { label: '下载洞悉结果', hint: '保存分析结果文件', icon: Download, tone: 'violet' },
@@ -103,6 +103,7 @@ const statusPageByTask = {
 const createPageByType = {
   idfa: 'https://ruyi.qq.com/audience/dnUpload?idType=MD5_IFA',
   oaid: 'https://ruyi.qq.com/audience/dnUpload?idType=MD5_OAID',
+  pn: 'https://ruyi.qq.com/audience/dnUpload?idType=MD5_MOBILE_PHONE',
 }
 async function refreshStatus() {
   const response = await fetch('/api/status')
@@ -222,7 +223,7 @@ async function detectCurrentStatus() {
     }
   }
   const createNames = statusCounts.value.createNames || []
-  const createType = createNames.find((name) => /idfa/i.test(name)) ? 'idfa' : createNames.find((name) => /oaid/i.test(name)) ? 'oaid' : null
+  const createType = ['pn', 'idfa', 'oaid'].find((type) => createNames.some((name) => name.toLowerCase().includes(type))) || null
   const targetKey = createType ? 'createCount' : statusCounts.value.doneCount > 0 ? 'doneCount' : statusCounts.value.analyseCount > 0 ? 'analyseCount' : null
   if (!targetKey) {
     notice.value = '当前没有待处理任务'
@@ -233,9 +234,9 @@ async function detectCurrentStatus() {
 async function importFolder(event) {
   const files = [...event.target.files]
   if (!files.length) return
-  const eligibleFiles = files.filter((file) => /(?:idfa|oaid)/i.test(file.name) && /\.(?:txt|csv)$/i.test(file.name))
+  const eligibleFiles = files.filter((file) => /(?:idfa|oaid|pn)/i.test(file.name) && /\.(?:txt|csv)$/i.test(file.name))
   if (!eligibleFiles.length) {
-    notice.value = '未找到符合条件的文件（文件名需含 idfa 或 oaid，格式为 .txt 或 .csv）'
+    notice.value = '未找到符合条件的文件（文件名需含 idfa、oaid 或 pn，格式为 .txt 或 .csv）'
     event.target.value = ''
     return
   }
@@ -352,6 +353,7 @@ async function pollJob(label) {
             <div v-if="queue.key === 'createCount' && createExpanded" class="queue-details">
               <div class="queue-detail"><span>IDFA 平台处理中</span><strong>{{ statusCounts.idfaPending }}</strong><small>个</small></div>
               <div class="queue-detail"><span>OAID 平台处理中</span><strong>{{ statusCounts.oaidPending }}</strong><small>个</small></div>
+              <div class="queue-detail"><span>PN 平台处理中</span><strong>{{ statusCounts.pnPending }}</strong><small>个</small></div>
             </div>
             <div v-if="queue.key === 'analyseCount' && insightExpanded" class="queue-details">
               <div class="queue-detail"><span>人群包平台处理中</span><strong>{{ statusCounts.insightPending }}</strong><small>个</small></div>

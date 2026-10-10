@@ -27,5 +27,7 @@ upload/idfa/*
 !upload/idfa/.gitkeep
 upload/oaid/*
 !upload/oaid/.gitkeep
+upload/pn/*
+!upload/pn/.gitkeep
 upload/result/*
 !upload/result/.gitkeep

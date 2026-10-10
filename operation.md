@@ -24,7 +24,7 @@ npm ci               # 按 package-lock.json 安装依赖
 脚本按顺序使用第一个存在的目录：`/download/upload`、`/下载/upload`、`~/Downloads/upload`。建议只保留一个，通常使用 `~/Downloads/upload`：
 
 ```bash
-mkdir -p ~/Downloads/upload/{raw,idfa,oaid,result}
+mkdir -p ~/Downloads/upload/{raw,idfa,oaid,pn,result}
 ```
 
 ```text
@@ -32,13 +32,14 @@ upload/
 ├── raw/                       原始 ID 文件
 ├── idfa/                      IDFA 待上传文件；成功后移入 idfa/done/
 ├── oaid/                      OAID 待上传文件；成功后移入 oaid/done/
+├── pn/                        PN 手机号 MD5 待上传文件；成功后移入 pn/done/
 ├── createGroupToDoList.json   待创建人群包
 ├── analyseToDoList.json       待创建洞察任务
 ├── done.json                  待下载洞察结果
 └── result/                    下载后的文件
 ```
 
-原始文件名必须包含 `idfa` 或 `oaid`（不区分大小写），否则 `move.js` 跳过。`uploadAll.js` 会先规范文件名：删除 `occupation` 和下划线，并将 `idfa`/`oaid` 移到文件名最前面（例如 `occupation_app_oaid_md5.txt` 变为 `oaidappmd5.txt`）；规范后不能为空，也不能与现有文件重名。脚本不校验文件内容，内容格式、MD5、大小和行数必须由执行人员按平台要求提前确认。
+原始文件名必须包含 `idfa`、`oaid` 或 `pn`（不区分大小写），否则 `move.js` 跳过。`uploadAll.js` 会先规范文件名：删除 `occupation` 和下划线，并将 `idfa`/`oaid`/`pn` 移到文件名最前面（例如 `occupation_app_oaid_md5.txt` 变为 `oaidappmd5.txt`）；规范后不能为空，也不能与现有文件重名。脚本不校验文件内容，内容格式、MD5、大小和行数必须由执行人员按平台要求提前确认。
 
 ### JSON 清单
 
@@ -63,7 +64,7 @@ upload/
 node uploadAll.js
 ```
 
-流程是：规范文件名（删除 `occupation`/下划线并前置 ID 类型）-> 生成 `createGroupToDoList.json`（仅收录 idfa/oaid，去扩展名）-> `move.js` 按类型移动 -> `upload.js` 每批最多 5 个上传 -> 成功提交后移入对应 `done/`。批处理会循环直到 `idfa/`、`oaid/` 没有待上传文件。首次登录需依次完成 DataNexus 和如翼登录；网页控制台会在当前登录窗口关闭后复查状态，再打开下一个站点。登录页、验证码或权限弹窗出现时，在打开的 Chrome 中完成操作并按终端提示继续。
+流程是：规范文件名（删除 `occupation`/下划线并前置 ID 类型）-> 生成 `createGroupToDoList.json`（仅收录 idfa/oaid/pn，去扩展名）-> `move.js` 按类型移动 -> `upload.js` 每批最多 5 个上传 -> 成功提交后移入对应 `done/`。批处理会循环直到 `idfa/`、`oaid/`、`pn/` 没有待上传文件。首次登录需依次完成 DataNexus 和如翼登录；网页控制台会在当前登录窗口关闭后复查状态，再打开下一个站点。登录页、验证码或权限弹窗出现时，在打开的 Chrome 中完成操作并按终端提示继续。
 
 ### 2. 创建人群包
 
@@ -71,7 +72,7 @@ node uploadAll.js
 node createAllGroup.js
 ```
 
-脚本从创建清单取一项，根据名称中的 `idfa`/`oaid` 打开对应页面，勾选已上传文件，使用文件名填写人群名称和描述并提交。成功后追加（去扩展名）到 `analyseToDoList.json`，再从 `createGroupToDoList.json` 删除；失败时保留待办项以便重试。
+脚本从创建清单取一项，根据名称中的 `idfa`/`oaid`/`pn` 打开对应页面，勾选已上传文件，使用文件名填写人群名称和描述并提交。成功后追加（去扩展名）到 `analyseToDoList.json`，再从 `createGroupToDoList.json` 删除；失败时保留待办项以便重试。
 
 ### 3. 创建洞察任务
 

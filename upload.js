@@ -16,6 +16,11 @@ if (!uploadRoot) {
 
 const folderConfigs = [
   {
+    idType: "pn",
+    importUrl: urls.pnImport,
+    successUrl: urls.pnUpload,
+  },
+  {
     idType: "idfa",
     importUrl: urls.idfaImport,
     successUrl: urls.idfaUpload,
@@ -344,7 +349,7 @@ async function uploadFolder(context, page, config) {
     if (config) {
       completedFiles = await uploadFolder(context, page, config);
     } else {
-      console.log("IDFA 和 OAID 文件夹中都没有待上传文件。");
+      console.log("IDFA、OAID 和 PN 文件夹中都没有待上传文件。");
     }
     if (completedFiles.length > 0) appendCreateGroupTodoList(uploadRoot, completedFiles);
     console.log("本次上传操作完成。");
