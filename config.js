@@ -11,6 +11,9 @@ require("./lib/playwright-env");
 const projectRoot = __dirname;
 const uploadRoot = process.env.RUYI_UPLOAD_DIR || path.join(projectRoot, "upload");
 const profileDir = process.env.RUYI_PROFILE_DIR || path.join(projectRoot, "ruyi-profile");
+// When set, browsers start fresh and load this Playwright storageState file
+// instead of the persistent profile above (see lib/browser.js).
+const stateFile = process.env.RUYI_STATE_FILE ? path.resolve(process.env.RUYI_STATE_FILE) : "";
 const envUrl = (name, fallback) => process.env[`RUYI_URL_${name}`] || fallback;
 const defaultChromePath = process.platform === "win32"
   ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
@@ -97,6 +100,7 @@ module.exports = {
   uploadRoot,
   uploadRootCandidates: [uploadRoot],
   profileDir,
+  stateFile,
   chromePath,
   browserHeadless,
   resultDir: path.join(uploadRoot, "result"),

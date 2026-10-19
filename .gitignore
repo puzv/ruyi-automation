@@ -31,3 +31,9 @@ upload/pn/*
 !upload/pn/.gitkeep
 upload/result/*
 !upload/result/.gitkeep
+
+# Playwright storageState files contain login credentials.
+state-test.json
+*.state.json
+*.state.json.*.tmp
+state-test.json.*.tmp

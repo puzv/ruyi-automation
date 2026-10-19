@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
+const { stateFile } = require("./config");
 const { requireUploadRoot } = require("./lib/paths");
 const { readJsonArray } = require("./lib/files");
 const { checkPreflight, waitForProfileRelease } = require("./lib/preflight");
@@ -17,7 +18,7 @@ function runDownload() {
   if (result.error) throw new Error(`download.js 启动失败：${result.error.message}`);
   // spawnSync waits for Node, but Chrome can outlive the child briefly while
   // releasing the persistent profile lock. Do not start the next task early.
-  if (!waitForProfileRelease({ timeoutMs: 30000 })) {
+  if (!stateFile && !waitForProfileRelease({ timeoutMs: 30000 })) {
     throw new Error("download.js 已退出，但 Chrome profile 未及时释放；请稍后重试或关闭占用该 Profile 的 Chrome。");
   }
   if (result.status === 2) return false;

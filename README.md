@@ -35,6 +35,14 @@ node downloadAll.js
 
 首次运行需要在浏览器中依次完成数据平台（DataNexus）和如翼平台登录。网页控制台的“需要登录”按钮会一次打开一个站点；完成登录并关闭当前登录窗口后，服务会复查登录状态，再打开下一个站点。不要将包含登录状态的 `ruyi-profile` 发送给其他人；分发时可创建一个空目录，让对方首次运行时自行登录。
 
+## 网页工作台
+
+首次使用时，在项目根目录和 `web/` 目录各执行一次 `npm install` 安装依赖。
+
+生产方式：在项目根目录执行 `npm run build:web`，完成后执行 `npm start`，打开 http://127.0.0.1:5173。可通过 `RUYI_SERVER_PORT` 和 `RUYI_SERVER_HOST` 环境变量修改端口和监听地址。
+
+开发方式：在项目根目录打开两个终端，分别运行 `npm run dev:server` 和 `npm run dev:web`，打开 http://localhost:5173（Vite 开发服务器只监听 localhost，用 127.0.0.1 可能打不开）。修改前端代码会热更新；修改 `server/` 后需重启 `dev:server`。
+
 ## 配置覆盖
 
 默认使用项目目录下的 `upload` 和 `ruyi-profile`。如需覆盖，可设置环境变量：

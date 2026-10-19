@@ -12,13 +12,23 @@
     "test:pn": "node test/pn-flow.test.js",
     "browser:split": "node scripts/split-playwright-browsers.js",
     "browser:install": "node scripts/install-playwright-browser.js",
-    "test": "node --check config.js && node --check createAllGroup.js && node --check lib/playwright-env.js && node --check lib/macos-arch.js && node --check scripts/split-playwright-browsers.js && node --check scripts/install-playwright-browser.js && node test/macos-arch.test.js"
+    "test": "node --check config.js && node --check createAllGroup.js && node --check lib/playwright-env.js && node --check lib/macos-arch.js && node --check scripts/split-playwright-browsers.js && node --check scripts/install-playwright-browser.js && node test/macos-arch.test.js && node test/migration-guard.test.js && node test/server-app.test.js && node test/server-routes.test.js",
+    "start": "node server/index.js",
+    "build:web": "npm --prefix web run build",
+    "dev:server": "RUYI_SERVER_PORT=5174 node server/index.js",
+    "dev:web": "npm --prefix web run dev",
+    "db:migrate": "node scripts/migrate.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@fastify/multipart": "^9.4.0",
+    "@fastify/static": "^10.1.6",
+    "fastify": "^5.12.7",
+    "kysely": "^0.29.7",
+    "mysql2": "^3.24.6",
     "playwright": "1.62.1"
   }
 }
