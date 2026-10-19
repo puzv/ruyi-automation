@@ -31,3 +31,54 @@ button { cursor: pointer; }
 .queue-detail span { flex: 1; }
 .queue-detail strong { color: #3d5149; font-size: 13px; }
 .queue-detail small { color: #98a49f; font-size: 10px; }
+
+/* 账号页面沿用工作台的卡片、边框与配色。 */
+.auth-screen { min-height: 100vh; display: grid; place-items: center; padding: 28px 18px; }
+.auth-card { width: 100%; max-width: 420px; padding: 30px; background: #fff; border: 1px solid #e0e7e3; border-radius: 10px; }
+.auth-brand { padding: 0; margin-bottom: 28px; }
+.auth-card h1 { font-size: 23px; }
+.auth-form { display: grid; gap: 18px; margin-top: 24px; }
+.auth-form label, .filter-form label, .user-create-form label { display: grid; gap: 7px; color: #53635d; font-size: 12px; }
+.auth-content { min-width: 0; }
+.auth-content h1 { font-size: 26px; }
+.page-description { color: #71827b; font-size: 12px; line-height: 1.8; }
+.auth-form input, .filter-form input, .filter-form select, .user-create-form input, .user-create-form select { width: 100%; min-width: 0; padding: 10px 11px; border: 1px solid #dce4df; border-radius: 6px; background: #fff; color: #182522; font: inherit; font-size: 12px; }
+.auth-form input:focus, .filter-form input:focus, .filter-form select:focus, .user-create-form input:focus, .user-create-form select:focus { outline: 2px solid #b9e5d2; outline-offset: 1px; }
+.primary-button, .secondary-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 14px; border-radius: 6px; font-size: 12px; border: 1px solid #dce4df; }
+.primary-button { color: #fff; background: #27624a; border-color: #27624a; }
+.primary-button:hover:not(:disabled) { background: #1b4b38; }
+.secondary-button { color: #50615b; background: #fff; }
+.secondary-button:hover:not(:disabled) { background: #f0f5f2; }
+.auth-content button:disabled, .auth-screen button:disabled { opacity: .55; cursor: default; }
+.text-button { display: inline-block; padding: 0; margin-top: 20px; color: #27624a; background: none; border: 0; font-size: 12px; }
+.form-error, .global-error { color: #a33f37; font-size: 12px; line-height: 1.7; }
+.form-error { margin: 0; }
+.form-success { color: #27624a; font-size: 12px; line-height: 1.7; }
+.global-error { padding: 12px 20px; background: #fbece8; }
+.sidebar-user { display: grid; gap: 5px; overflow-wrap: anywhere; font-size: 12px; }
+.sidebar-user span { color: #8da39a; font-size: 11px; }
+.sidebar-account-actions { display: flex; flex-wrap: wrap; gap: 15px; margin-top: 14px; }
+.sidebar-account-actions a, .sidebar-account-actions button { padding: 0; border: 0; background: none; color: #b8c9c1; font-size: 11px; text-decoration: none; }
+.sidebar-account-actions a:hover, .sidebar-account-actions button:hover { color: #dff6ea; }
+.filter-form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 26px 0 18px; }
+.filter-form label { flex: 1 1 140px; }
+.filter-form .primary-button, .filter-form .secondary-button { min-height: 37px; }
+.content-card { margin-top: 20px; padding: 20px; border: 1px solid #e0e7e3; border-radius: 9px; background: #fff; }
+.table-scroll { overflow-x: auto; }
+.data-table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; }
+.data-table th { padding: 13px 12px; color: #71827b; background: #f7faf8; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.data-table td { padding: 13px 12px; border-bottom: 1px solid #edf1ef; line-height: 1.7; overflow-wrap: anywhere; }
+.data-table td:first-child { white-space: nowrap; }
+.data-table tbody tr:last-child td { border-bottom: 0; }
+.result-badge { display: inline-block; padding: 3px 8px; border-radius: 6px; font-size: 11px; white-space: nowrap; }
+.result-badge.success { color: #27624a; background: #dff3e8; }
+.result-badge.failure { color: #a33f37; background: #fbece8; }
+.pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 18px; color: #71827b; font-size: 12px; }
+.empty-state { padding: 26px; color: #71827b; text-align: center; font-size: 12px; }
+.user-create-form { display: flex; flex-wrap: wrap; align-items: end; gap: 14px; }
+.user-create-form label { flex: 1 1 150px; }
+.content-card h2 { margin: 0 0 18px; font-size: 16px; }
+.row-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.row-actions button { white-space: nowrap; }
+@media (max-width: 820px) { .sidebar-user { font-size: 11px; }.sidebar-user span { font-size: 10px; }.sidebar-account-actions { gap: 12px; }.sidebar-account-actions a, .sidebar-account-actions button { font-size: 10px; }.auth-brand > div:last-child { display: block; }.auth-content h1 { font-size: 23px; } }
+@media (max-width: 620px) { .auth-card { padding: 24px 20px; }.content-card { padding: 12px; }.pagination { justify-content: flex-start; } }

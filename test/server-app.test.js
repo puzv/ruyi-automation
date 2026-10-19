@@ -17,7 +17,7 @@ async function main() {
     fs.writeFileSync(path.join(webDist, "assets", "a.js"), asset);
     fs.writeFileSync(path.join(webDist, "api", "xxx"), "不应返回的静态文件");
 
-    const app = buildApp({ webDist, logger: false });
+    const app = buildApp({ auth: false, webDist, logger: false });
     apps.push(app);
     assert.equal(app.server.listening, false);
 
@@ -48,7 +48,7 @@ async function main() {
     const emptyDist = path.join(tempDir, "empty-dist");
     fs.mkdirSync(emptyDist);
     for (const unbuiltDist of [path.join(tempDir, "missing-dist"), emptyDist]) {
-      const unbuiltApp = buildApp({ webDist: unbuiltDist, logger: false });
+      const unbuiltApp = buildApp({ auth: false, webDist: unbuiltDist, logger: false });
       apps.push(unbuiltApp);
       const unbuiltHealth = await unbuiltApp.inject({ method: "GET", url: "/api/health" });
       assert.equal(unbuiltHealth.statusCode, 200);

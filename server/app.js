@@ -2,6 +2,12 @@ const fs = require("fs");
 const path = require("path");
 const Fastify = require("fastify");
 const { LogController } = Fastify;
+const fastifyCookie = require("@fastify/cookie");
+const { guard } = require("./auth/guard");
+const { registerAuthRoutes } = require("./routes/auth");
+const { auditResponse } = require("./audit-actions");
+const { registerLogsRoutes } = require("./routes/logs");
+const { registerAdminUsersRoutes } = require("./routes/admin-users");
 const fastifyStatic = require("@fastify/static");
 const { registerRoutes } = require("./routes");
 
@@ -23,11 +29,25 @@ function defaultLogger() {
 }
 
 function buildApp(options = {}) {
+  const auth = options.auth ?? true;
+  if (auth && !options.db) throw new Error("启用鉴权必须提供数据库连接");
   const app = Fastify({
     logger: options.logger ?? defaultLogger(),
     logController: new LogController({ disableRequestLogging: true }),
     bodyLimit: 2 * 1024 * 1024,
   });
+  if (options.db) app.decorate("db", options.db);
+  app.decorate("auditEnabled", auth);
+  app.addHook("onSend", auditResponse);
+  app.register(fastifyCookie);
+  if (auth) {
+    app.decorateRequest("user", null);
+    app.decorateRequest("sessionTokenHash", null);
+    app.addHook("onRequest", guard);
+    app.register(registerAuthRoutes);
+    app.register(registerAdminUsersRoutes);
+    app.register(registerLogsRoutes);
+  }
   const webDist = path.resolve(options.webDist ?? path.join(__dirname, "..", "web", "dist"));
   const indexFile = path.join(webDist, "index.html");
   const hasWebBuild = fs.existsSync(indexFile) && fs.statSync(indexFile).isFile();

@@ -16,7 +16,8 @@ function signalJobProcess(job, signal) {
   return true
 }
 
-function startJob(task, script) {
+function startJob(task, script, { onFinish } = {}) {
+  const startedAt = Date.now()
   const id = `${Date.now()}-${task}`
   const child = spawn(process.execPath, [path.join(projectRoot, script)], {
     cwd: projectRoot,
@@ -30,7 +31,12 @@ function startJob(task, script) {
   state.jobs.set(id, job)
   child.stdout.on('data', (data) => { job.output += data.toString() })
   child.stderr.on('data', (data) => { job.output += data.toString() })
-  child.on('close', (code) => { job.running = false; job.code = code })
+  child.on('close', (code, signal) => {
+    job.running = false; job.code = code
+    if (onFinish) Promise.resolve().then(() => onFinish({
+      id, task, code, signal: signal ?? null, durationMs: Date.now() - startedAt,
+    })).catch(() => {})
+  })
   return id
 }
 

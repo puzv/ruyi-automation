@@ -12,7 +12,8 @@
 - 不读取、不修改、不打印：`state-test.json`、`*.state.json`、`ruyi-profile/`、`.env`、`upload/` 下的数据文件。
 - 不修改 `db/migrations/` 里已有的迁移文件；表结构变更只能新增迁移文件。
 - 不执行 git commit / push / reset / checkout，不删除文件（除非任务明确要求）。
-- 不连接任何远程数据库；不执行 `node scripts/migrate.js up`。
+- 只允许连接本机 Docker 中的开发数据库（127.0.0.1:3306，库 `ruyi_dev` / `ruyi_test`，账号 `ruyi` / 密码 `ruyi`）；不连接任何远程数据库，不对远程库执行 `node scripts/migrate.js`。
+- 数据库测试只使用 `ruyi_test` 库，测试前后清空自己写入的 `ruyi_` 表数据；不得删除表或修改表结构。
 
 ## 数据库约束（远程库是共享库 bsg_dw，MySQL 5.7）
 - 使用 Kysely + mysql2，连接从 `db/index.js` 的 `createDb()` 获取，不使用 Prisma。

@@ -18,6 +18,7 @@ const readline = require("readline");
 const { DummyDriver, Kysely, MysqlAdapter, MysqlIntrospector, MysqlQueryCompiler, sql } = require("kysely");
 const { Migrator } = require("kysely/migration");
 const { readDbConfig, createDb } = require("../db");
+const { loadDotEnv } = require("../db/env");
 const { tablePrefix, checkStatement, createdTable } = require("../db/migration-guard");
 
 const migrationDir = path.join(__dirname, "..", "db", "migrations");
@@ -25,16 +26,6 @@ const migrationTableName = "ruyi_migrations";
 const migrationLockTableName = "ruyi_migration_lock";
 
 loadDotEnv(path.join(__dirname, "..", ".env"));
-
-// Minimal .env loader (KEY=VALUE lines). Existing environment variables win.
-function loadDotEnv(file) {
-  if (!fs.existsSync(file)) return;
-  for (const line of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
-    const match = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-    if (!match || process.env[match[1]] !== undefined) continue;
-    process.env[match[1]] = match[2].replace(/^(['"])(.*)\1$/, "$2");
-  }
-}
 
 function migrationFiles() {
   return fs.readdirSync(migrationDir).filter((name) => /^\d{8}_\d{3}_[a-z0-9_]+\.js$/.test(name)).sort();

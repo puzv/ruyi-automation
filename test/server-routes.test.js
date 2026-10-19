@@ -35,7 +35,7 @@ function multipart(files) {
 }
 
 async function main() {
-  const app = buildApp({ logger: false, webDist: path.join(tempDir, 'missing-dist') });
+  const app = buildApp({ auth: false, logger: false, webDist: path.join(tempDir, 'missing-dist') });
   try {
     fs.mkdirSync(path.join(tempDir, 'raw'));
     fs.mkdirSync(path.join(tempDir, 'oaid', 'done'), { recursive: true });
@@ -220,7 +220,7 @@ async function main() {
     const indexHtml = '<!doctype html><html><body>接口回退测试</body></html>';
     fs.mkdirSync(webDist);
     fs.writeFileSync(path.join(webDist, 'index.html'), indexHtml);
-    const builtApp = buildApp({ logger: false, webDist });
+    const builtApp = buildApp({ auth: false, logger: false, webDist });
     try {
       for (const method of ['GET', 'POST']) {
         const response = await builtApp.inject({ method, url: '/api/nope' });
@@ -237,7 +237,7 @@ async function main() {
     }
 
     const logs = [];
-    const loggingApp = buildApp({
+    const loggingApp = buildApp({ auth: false,
       logger: { level: 'info', stream: { write: (line) => logs.push(JSON.parse(line)) } },
       webDist,
     });
@@ -276,7 +276,7 @@ async function main() {
       await loggingApp.close();
     }
 
-    const readableApp = buildApp({ webDist });
+    const readableApp = buildApp({ auth: false, webDist });
     readableApp.get('/api/test-error', () => { throw new Error('模拟易读日志异常'); });
     const output = [];
     const originalStdoutWrite = process.stdout.write;

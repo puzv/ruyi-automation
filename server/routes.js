@@ -8,6 +8,7 @@ const { decodeUploadedFileName, getWorkspaceStatus, readTaskItems } = require('.
 const { loginTargets, inspectLoginStatus, advanceLoginFlow, advanceExternalLoginFlow, inspectPlatformFiles, inspectAnalyseAudience, inspectInsightResults, trackContext, openExternalUrl } = require('./platform')
 const { signalJobProcess, startJob } = require('./jobs')
 const state = require('./state')
+const { writeLog, auditFromRequest } = require('./audit')
 
 async function registerRoutes(api) {
   api.removeContentTypeParser('application/json')
@@ -210,6 +211,7 @@ async function registerRoutes(api) {
     }
   })
   api.post('/api/import-folder', async (req, res) => {
+    req.auditImport = { count: 0, skipped: 0, files: [] }
     let files
     try {
       files = []
@@ -234,6 +236,7 @@ async function registerRoutes(api) {
         const fileName = path.basename(relative)
         if (fileName.startsWith('.') || !/(?:idfa|oaid|pn)/i.test(fileName) || !/\.(?:txt|csv)$/i.test(fileName)) {
           skipped += 1
+          req.auditImport.skipped = skipped
           continue
         }
         const target = path.resolve(rawDir, fileName)
@@ -241,6 +244,8 @@ async function registerRoutes(api) {
         if (fs.existsSync(target)) throw new Error(`文件已存在，不会覆盖：${path.basename(target)}`)
         fs.writeFileSync(target, file.buffer)
         count += 1
+        req.auditImport.count = count
+        if (req.auditImport.files.length < 100) req.auditImport.files.push(fileName)
       }
       res.send({ ok: true, count, skipped })
     } catch (error) { res.code(400).send({ ok: false, message: error.message }) }
@@ -253,7 +258,14 @@ async function registerRoutes(api) {
     if (state.profileProbeRunning) return res.code(409).send({ ok: false, message: '登录或平台状态检查正在进行，请稍后重试' })
     if (state.loginContexts.size || state.loginFlow) return res.code(409).send({ ok: false, message: '登录窗口仍在使用 Profile，请完成登录并关闭窗口后再运行任务' })
     if ([...state.jobs.values()].some((job) => job.running)) return res.code(409).send({ ok: false, message: '已有脚本正在运行，请等待完成' })
-    const id = startJob(req.params.task, script)
+    const origin = auditFromRequest(req, {})
+    const id = startJob(req.params.task, script, {
+      onFinish: api.auditEnabled ? (job) => writeLog(api.db, {
+        ...origin, action: 'job.finish', targetType: 'job', targetId: job.id,
+        result: job.code === 0 ? 'success' : 'failure',
+        detail: { task: job.task, code: job.code, signal: job.signal, durationMs: job.durationMs },
+      }, api.log) : undefined,
+    })
     res.send({ ok: true, id })
   })
   api.get('/api/jobs/:id', (req, res) => {

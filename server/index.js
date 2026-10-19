@@ -1,6 +1,20 @@
+const path = require("path");
+const { loadDotEnv } = require("../db/env");
+
+loadDotEnv(path.join(__dirname, "..", ".env"));
+
 const { buildApp } = require("./app");
 
-const app = buildApp();
+const { createDb } = require("../db");
+let app;
+try {
+  const db = createDb();
+  app = buildApp({ db });
+  app.addHook("onClose", async () => { await db.destroy(); });
+} catch (error) {
+  console.error(`服务启动失败：${error.message}`);
+  process.exit(1);
+}
 let closing = false;
 
 async function shutdown() {
