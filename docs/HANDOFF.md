@@ -1,71 +1,87 @@
-# 交接说明：如翼自动化平台重构（由 Codex 接管）
+# 交接说明：如翼自动化平台重构（第二次交接给 Codex）
 
-写给：接手本项目的 Codex 主代理（及其子代理）。
+写给：接手本项目的 Codex 主代理（及其子代理）。截至提交 `edae2d3`（2026-10-20）。
 
-## 你的角色
-你接替 Claude Code，负责**统筹规划与验收**；具体编码可以交给你的子代理。工作方式与之前相同：
-1. 每个任务先写一份任务说明到 `docs/tasks/<阶段>.<序号>-<名称>.md`（参考 `docs/tasks/2.*.md` 的写法：背景、要做的事、约束、测试、完成标准）。
-2. 让子代理按任务说明编码。
-3. **你亲自审查**：列出实际改动的文件、确认敏感文件没被动过、读改动、自己重跑测试、补测边界情况。不要只看子代理的自述。
-4. 一个**阶段**完成后停下，给负责人一份验收清单，**负责人亲自验收通过后才进入下一阶段**。
-5. 只在负责人要求时提交 git；直接在 `main` 上工作，不开分支。
+## 你的角色与工作方式
+你负责**统筹规划与验收**，编码可以交给子代理。工作方式不变：
+1. 每个任务先写任务说明到 `docs/tasks/<阶段>.<序号>-<名称>.md`（参考 `docs/tasks/4.*`、`5.*`：背景、要做的事、约束、测试、完成标准）。
+2. 子代理编码；**你亲自审查**：列出实际改动文件，`shasum` 确认 `state-test.json`、`.env` 未被改，读改动，自己重跑 `npm run test:all`，补测边界。
+3. 子代理沙箱无法启动 Chromium；涉及真实浏览器的检查由主代理用 `lib/playwright-env` + Playwright 无头模式完成（参考本仓库历史任务中的做法）。
+4. 一个阶段完成后停下，给负责人逐步验收清单；负责人验收通过后再进入下一阶段。
+5. 直接在 `main` 上工作；只在负责人要求时提交 git。
+6. 与负责人沟通用中文；给出的 shell 命令行尾不要写 `# 注释`（负责人用 zsh）。
 
 ## 必读文件（按顺序）
-1. `AGENTS.md`：代码规则、禁止事项、数据库约束
-2. `docs/REFACTOR_PLAN.md`：总体计划、已定技术决定、各阶段范围与进度
-3. `docs/tasks/2.1`～`2.4`：最近的任务说明，作为写法范例
-4. 最近两次提交：`git show --stat 906f954 145f0d2`
+1. `AGENTS.md`：代码规则、禁止事项、数据库与登录态约束
+2. `docs/REFACTOR_PLAN.md`：技术决定、各阶段范围与进度（最权威）
+3. 本文件“剩余工作”一节
+4. `docs/STAGE3-4_ACCEPTANCE.md`、`docs/STAGE5_ACCEPTANCE.md`：待负责人执行的验收清单
 
-## 当前状态（阶段 3 实现完成，尚未提交）
-- **阶段 1 已验收**：API 从 Vite 插件拆成独立 Fastify 服务（`server/`），前端为生产构建，`npm start` 启动。
-- **阶段 2 已验收并提交**：账号密码登录、会话、权限（普通用户/管理员）、强制改密码、登录锁定、只追加的操作记录、前端登录与记录页面。
-- **阶段 3 已实现并通过主代理审查和完整测试，等待负责人验收**，逐步清单见 `docs/PHASE3_ACCEPTANCE.md`。负责人通过前不进入阶段 4。
-- 旧工作区已复制到 `upload/users/pzw/`：678 个文件、154302678 字节，逐文件 SHA-256 校验通过，原目录保留；未给历史对象改平台名。
-- 阶段 3 代码及任务文档均未提交；继续在 `main` 工作，只有负责人要求时提交。验收前需重启当前后端服务加载新代码。
-- 工作区未提交内容：`upload/analyseToDoList.json`（运行时数据，不要提交）、`artifacts/` 与 `.vscode/`（与重构无关，不要提交）。
+## 当前状态
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| 1 | API 从 Vite 插件拆为独立 Fastify 服务 | 已验收、已提交 |
+| 2 | 账号密码登录、权限、操作记录 | 已验收、已提交 |
+| 3 | 用户数据隔离、平台名称映射 | 已提交，**待负责人验收** |
+| 4 | 平台登录态加密存库、网页内扫码登录、按用户加载登录态 | 已提交，**待负责人验收** |
+| 5A | 任务队列与 Worker | 已提交，**待负责人验收** |
+| 5B | 人群文件流水线状态入表 | 未开始（推迟） |
+| 6 | K8s 部署 | 未开始 |
+
+阶段 3/4/5A 的验收被推迟，原因是负责人的如翼账号暂时无法登录。三个阶段的自动化测试和主代理的端到端检查（使用假任务脚本）都已通过，**唯一没跑过的是真实平台上的完整业务流程**。
 
 ## 环境
-- 本机 Docker 容器 `ruyi-mysql`（MySQL 5.7，`127.0.0.1:3306`，自动重启）。开发库 `ruyi_dev`，测试库 `ruyi_test`，账号 `ruyi` / `ruyi`。两个库都已迁移；开发库已有启用的 `pzw` 账号，阶段 3 未改其账号数据。
-- `.env` 指向 `ruyi_dev`（不要读取或打印它；测试通过环境变量传入连接信息）。
-- 测试：`npm test`（无需数据库）、`npm run test:all`（包含数据库测试，只连接 `ruyi_test`）。
-- 依赖由负责人或主代理安装；子代理沙箱可能无法访问 npm 源，不要让子代理安装依赖。
-- 子代理需要连接本地数据库时，沙箱必须允许网络访问（之前使用 `-c sandbox_workspace_write.network_access=true`）。
-- 生产远程库是**共享库 `bsg_dw`（MySQL 5.7）**，尚未执行迁移。**不要连接它**，除非负责人明确要求，并且要先运行 `node scripts/migrate.js plan` 给负责人过目。
+- **生产数据库**：远程共享库 `bsg_dw`（MySQL 5.7.40），连接信息在项目 `.env` 中（不要读取或打印 `.env`；需要连接时让程序通过 `db/env.js` 加载）。负责人要求：**只用 `bsg_dw`，不得改动库中已有的任何表**。迁移 001–005 已执行，库中有 7 张 `ruyi_` 表；原有 48 张表结构在执行前后一致。
+  - 今后任何新迁移：先 `node scripts/migrate.js plan` 给负责人看 SQL → 负责人同意 → 执行前后对原有表做结构快照对比。
+  - 该账号拥有 `ALL PRIVILEGES ON *.*`，迁移脚本的安全检查（`db/migration-guard.js`）是唯一防线，不要绕过。
+- **本地开发库**：Docker 容器 `ruyi-mysql`（MySQL 5.7，`127.0.0.1:3306`，账号 `ruyi`/`ruyi`），库 `ruyi_dev`、`ruyi_test`。`.env.local-dev.bak` 是指向本地库的配置备份。
+- **测试**：`npm test`（无需数据库）、`npm run test:all`（含数据库测试，只连 `ruyi_test`，库名不对会拒绝运行）。子代理需要访问本地数据库时，沙箱必须开启网络（`-c sandbox_workspace_write.network_access=true`）。
+- **依赖**由主代理安装，不让子代理安装（沙箱可能连不上 npm 源）。
+- **加密密钥** `RUYI_STATE_KEY` 在 `.env` 中，丢失则所有平台登录态无法解密（需重新扫码）。
 
 ## 绝对不能做的事
-- 不读取、不修改、不打印：`state-test.json`（真实平台登录凭证）、`*.state.json`、`ruyi-profile/`、`.env`、`upload/` 下的数据文件。审查时用 `shasum` 确认 `state-test.json` 和 `.env` 没被改过。
-- 不修改 `db/migrations/` 里已有的迁移文件；改表结构只能新增迁移文件，并且必须通过 `db/migration-guard.js` 的安全检查（只允许 `ruyi_` 表的 DDL，`up` 中不能出现 DROP）。
-- 不使用 MySQL 8 专有语法：`SKIP LOCKED`、CTE（WITH）、窗口函数、`utf8mb4_0900_ai_ci`。
+- 不读取、不修改、不打印：`state-test.json`、`*.state.json`、`ruyi-profile/`、`.env`、`.env.*.bak`、`upload/` 下的数据文件。
+- 不改动 `bsg_dw` 中任何非 `ruyi_` 表；不对 `bsg_dw` 执行 `migrate.js down`（脚本已禁止远程回滚）。
+- 不修改 `db/migrations/` 中已有文件；表结构变更只能新增迁移，且必须通过 `db/migration-guard.js`。
+- 不使用 MySQL 8 语法（`SKIP LOCKED`、CTE、窗口函数、`utf8mb4_0900_ai_ci`）；UPDATE 中不能子查询同一张表。
 - 不对 `ruyi_operation_logs` 执行 UPDATE/DELETE（测试清理 `ruyi_test` 除外）。
-- 不对远程库执行 `migrate.js down`（脚本已经禁止）。
+- 登录态明文只能存在于内存或权限 600 的临时文件中，不得写日志、接口响应或操作记录。
+
+## 剩余工作
+
+### A. 负责人验收（不需要写代码，但可能产生修复任务）
+1. 负责人在 `bsg_dw` 上创建管理员：`npm run user:create-admin -- <用户名> <显示名>`，再在网页上创建普通用户。
+2. 按 `docs/STAGE3-4_ACCEPTANCE.md`、`docs/STAGE5_ACCEPTANCE.md` 验收。重点风险：
+   - 网页内扫码登录（本机模式：登录窗口弹在运行服务的电脑上）是否顺利完成并保存登录态
+   - 新命名规则 `<用户名>_<类型>_<8位短串>_<序号>` 在如翼/DataNexus 上能否正常上传、搜索、创建人群、洞悉、下载（30 字符上限）
+   - 下载结果按原始文件名保存
+   - 任务结束后登录态回写续期
+3. 验收中发现的问题按“任务说明 → 子代理修复 → 审查”流程处理。
+
+### B. 阶段 6：K8s 部署（主要剩余开发工作）
+部署仓库在 `~/playwright-upload-deploy`（独立目录，**尚无任何 git 提交**；`k8s/` 下仍是最初的模板，与线上实际不一致）。线上目前运行旧镜像 `harbor.ge.cn/b2d/common/ruyi-upload:desktop-39c1a12`，namespace `b2d-bsgdw`，PVC `ruyi-upload-data`（nfs-client，10Gi），NodePort 暴露 5173（应用）和 6080（无密码桌面）。部署方式是负责人在 Kubernetes Dashboard 粘贴 YAML（本机没有 kubectl 集群配置）。
+
+需要做的：
+1. **Dockerfile**：基于新代码重建。启动命令改为 `npm start`（不再用 `npm --prefix web run dev`）；构建时执行 `npm run build:web`；镜像中包含 Xvfb、openbox、x11vnc（只监听 `127.0.0.1:5900`），**不再需要 websockify/noVNC 服务端和 6080 端口**（远程桌面由后端鉴权 WebSocket 转发，见 `server/platform-login/vnc-proxy.js`）。
+2. **启动脚本**：启动 Xvfb `:99` + openbox + x11vnc（`-localhost -rfbport 5900 -forever -shared`，可加 `-nopw`，因为只监听本机且入口有鉴权）+ `npm start`；设置 `RUYI_LOGIN_DISPLAY=vnc`、`DISPLAY=:99`。参考现有 `scripts/start-desktop.sh`。
+3. **Secret**：数据库连接（`RUYI_DB_*`）与 `RUYI_STATE_KEY` 放入 K8s Secret，以环境变量注入。**`RUYI_STATE_KEY` 必须与负责人本地 `.env` 中的一致**，否则本地登录的平台登录态在线上无法解密（也可以接受线上重新扫码）。
+4. **存储**：用户工作区 `RUYI_UPLOAD_DIR` 指向 PVC（例如 `/data/upload`）；不再需要 `/data/profile`（emptyDir 可删）。
+5. **Service**：删除桌面 NodePort（6080）；应用入口仍为 5173。若平台同事能提供 Ingress + HTTPS，设置 `RUYI_COOKIE_SECURE=1`。
+6. **资源**：每个运行中的任务约 0.5–1.5GB 内存。按 `RUYI_MAX_CONCURRENT_JOBS`（默认 2）调整 limits（建议内存 ≥ 4Gi）；`/dev/shm` 用 `emptyDir: { medium: Memory, sizeLimit: 1Gi }`。
+7. **更新策略**：保持 `Recreate`、单副本（Worker 内嵌）。如需拆分，API 设 `RUYI_WORKER=off`，另起 Worker Deployment 运行 `npm run worker`（两者共享 PVC，需 ReadWriteMany）。
+8. **迁移旧数据**：线上 PVC 中旧的 `/data/upload` 数据若需要保留，用 `scripts/migrate-user-workspace.js` 复制到某个用户名下（先 dry-run）。
+9. **验证项**（阶段 4 中未能实测）：Xvfb + x11vnc + 后端 WebSocket 转发 + 网页 noVNC 组件的完整链路；远程桌面同时只允许 1 人登录。
+10. 把实际生效的 K8s YAML、Dockerfile 提交到部署仓库，并更新其 README。
+
+### C. 推迟的工作（负责人尚未要求）
+- **5B 流水线入表**：把 `createGroupToDoList.json`、`analyseToDoList.json`、`done.json`、`file-manifest.json` 改为数据库表；等开始做“分析下载结果文件”功能时再做。
+- **文件分析功能**：负责人最初提到的需求，尚未设计。
+- 管理员查看他人任务日志内容（目前只能看状态）。
+- 接入公司 SSO；向 DBA 申请仅限 `ruyi_` 表的低权限数据库账号；数据库密码已在对话中出现过，建议更换。
+- 已知遗留：`lib/browser.js` 的持久 Profile 分支与 `lib/preflight.js` 只供命令行单机脚本使用；如果负责人确认不再用命令行，可以清理，并删除 `ruyi-profile/`。
 
 ## 关键设计（不要推翻，除非与负责人商量）
-- 后端：Node.js CommonJS + Fastify 5；数据库：Kysely + mysql2；前端：Vue 3 + Vite，不引入 vue-router 或组件库。
-- 平台登录态（如翼 / DataNexus）使用 Playwright **storageState**，已实测可用：`lib/storage-state.js`；`lib/browser.js` 中设置 `RUYI_STATE_FILE` 即走该模式；关闭浏览器时只在仍处于业务页面时回写登录态。
-- 判断“平台已登录”必须看**登录后才出现的业务元素并持续约 3 秒**，不能只看 URL：如翼会先显示页面框架，再跳转到 `sso.e.qq.com`。现有 `server/platform.js` 的 `inspectLoginStatus` 仍是旧的弱判断，计划在阶段 4 替换。
-- 表 `ruyi_platform_states` 已建好（加密登录态，计划在阶段 4 使用）。
-- 抢任务用原子 `UPDATE ... WHERE status='queued' ORDER BY id LIMIT 1` 加 `claim_token`（阶段 5）。
-
-## 阶段 3：用户数据隔离（已实现，待负责人验收）
-目标：两个用户互相看不到对方的文件、任务和结果，同一平台账号下的人群包不会互相串用。
-
-负责人已在接管会话中修订本节的命名方案：不新增文件清单数据库表，平台名称不含原始文件名，使用 `<用户名>_<类型>_<任务ID短串>_<序号>`；新增用户目录内 JSON 映射清单，保存平台名称与初始文件名、完整任务 ID 的对应关系，下载后恢复初始主文件名及实际结果格式扩展名。上传前对整个任务的全部待处理文件检查初始文件名重复。旧 `upload/` 数据归 `pzw`，迁移保留源文件。具体实施和测试边界以 `docs/tasks/3.1-workspace-and-jobs.md`、`3.2-platform-name-manifest.md`、`3.3-pzw-migration-and-tests.md` 为准。
-
-已实现的范围（具体任务文档及验收清单优先）：
-1. **目录**：已从所有人共用 `config.uploadRoot`（`upload/`）改为每个用户一个目录 `<数据根目录>/users/<用户名>/`，包含 raw/idfa/oaid/pn/result、三个 JSON 清单及名称映射清单。服务端根据 `request.user` 计算路径，前端不能传路径。
-2. **任务脚本**：`server/jobs.js` 的 `startJob` 启动脚本时传入该用户的 `RUYI_UPLOAD_DIR`、`RUYI_USER`、服务端生成的 `RUYI_JOB_ID`；工作流使用 `lib/file-manifest.js` 保存并沿用名称映射。
-3. **平台上的同名冲突**（重点）：多个用户共用同一个如翼 / DataNexus 账号，脚本**按文件名**在平台上查找和匹配人群包（`createGroup.js`、`analyse.js`、`download.js`、`server/platform.js`）。上传前按上述已确认规则分配平台名并保存映射，后续清单及精确匹配使用平台名。通过环境变量 `RUYI_USER`、`RUYI_JOB_ID` 传入，未设置时保持原单机行为。重试不得重新分配已保存的平台名。
-4. **并发**：保留全局只允许一个浏览器任务运行（`server/state.js` 的 `jobs`），所有任务共用同一个浏览器 Profile；任务日志、`GET /api/jobs/:id`、状态接口已按用户隔离：A 不能查看 B 的任务日志。阶段 4 改用 storageState 后再评估并发。
-5. **接口**：`/api/status`、`/api/import-folder`、`/api/run/:task`、`/api/jobs/:id`、`/api/platform-status` 都要按用户处理。
-6. **迁移**：负责人已指定现有 `upload/` 数据归属 `pzw`；提供一次性预检和复制脚本，不删除原目录，不给已在平台创建的旧对象改名。
-
-验收建议：两个账号分别导入文件，互相看不到对方的待处理数量和文件；A 运行任务时 B 看不到 A 的日志；平台上的人群包名称带用户名前缀。
-
-## 已知问题（先不用修）
-- `server/platform.js` 的 `advanceExternalLoginFlow` 用到了未导入的 `waitForProfileRelease`（Profile 被外部 Chrome 占用时才会走到这里），从原代码原样搬过来的，阶段 4 会整体替换。
-- 部署仓库 `~/playwright-upload-deploy` 的 Dockerfile 仍用 `npm --prefix web run dev` 启动，也没有数据库配置，线上 K8s 运行的是旧镜像 `39c1a12`。**不要用新代码重建镜像**，阶段 6 统一处理。
-- K8s 上的桌面入口（NodePort 6080）没有密码，负责人知道这件事。
-
-## 和负责人沟通
-- 用中文，简洁直接；给出的 shell 命令不要在行尾写 `# 注释`（负责人用 zsh，`#` 会被当成参数）。
-- 每个阶段结束时提供：做了什么、你验证了什么、行为上有哪些变化、逐步验收清单。
+- 后端 Node.js CommonJS + Fastify 5；数据库 Kysely + mysql2；前端 Vue 3 + Vite，不引入 vue-router 或组件库。
+- 平台登录态用 Playwright storageState，AES-256-GCM 加密存 `ruyi_platform_states`，AAD 绑定 `user_id`；判断“已登录”看业务元素并持续 3 秒（`lib/storage-state.js`）。
+- 任务：`ruyi_jobs` 入队 → Worker 在命名锁内认领 → 包装器（`scripts/job-wrapper.js`）启动脚本 → 临时解密的登录态文件（600）→ 结束后回写/标记过期并删除 → 写 `job.finish`。
+- 每个用户独立工作区 `upload/users/<用户名>/`；平台名称 `<用户名>_<类型>_<任务短串>_<序号>`，映射存 `file-manifest.json`。
