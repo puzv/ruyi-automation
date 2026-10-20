@@ -7,12 +7,9 @@ const { requireUploadRoot } = require("./lib/paths");
 const { readJsonArray, writeJsonArray } = require("./lib/files");
 const { launchBrowser, closeBrowserContext } = require("./lib/browser");
 const { navigateWithLogin } = require("./lib/login");
-const uploadRoot = requireUploadRoot("上传");
+const { planUpload, prepareUpload, requireMapping, updateStage, pendingCandidates } = require("./lib/file-manifest");
+let uploadRoot;
 
-if (!uploadRoot) {
-  console.error(`找不到上传目录，请创建：${uploadRootCandidates.join(" 或 ")}`);
-  process.exit(1);
-}
 
 const folderConfigs = [
   {
@@ -34,12 +31,9 @@ const folderConfigs = [
 
 
 function getFiles(folder, idType) {
-  if (!fs.existsSync(folder)) return [];
-  return fs.readdirSync(folder)
-    .map((name) => path.join(folder, name))
-    .filter((file) => fs.statSync(file).isFile())
-    .filter((file) => path.basename(file).toLowerCase().includes(idType))
-    .sort();
+  return pendingCandidates(uploadRoot)
+    .filter((item) => item.type === idType && path.dirname(item.path) === folder)
+    .map((item) => item.path).sort();
 }
 
 function moveToDone(files, folder) {
@@ -51,7 +45,10 @@ function moveToDone(files, folder) {
     throw new Error(`done 文件夹中已存在同名文件，不会覆盖：${existing}`);
   }
   files.forEach((file, index) => {
+    updateStage(uploadRoot, withoutExtension(path.basename(file)), "uploaded");
     fs.renameSync(file, destinations[index]);
+    const name = withoutExtension(path.basename(file));
+    updateStage(uploadRoot, name, "uploaded", destinations[index]);
     console.log(`已移动到：${destinations[index]}`);
   });
 }
@@ -227,7 +224,9 @@ async function waitForSubmitNavigationOrFailure(page, successUrl, timeout = 6000
 async function uploadFolder(context, page, config) {
   const completedFiles = [];
   const folder = path.join(uploadRoot, config.idType);
-  const files = resolveBatchNameCollisions(getFiles(folder, config.idType), folder, 5);
+  const pending = getFiles(folder, config.idType);
+  const managed = pending.some((file) => !requireMapping(uploadRoot, path.basename(file)).legacy);
+  const files = managed ? pending.slice(0, 5) : resolveBatchNameCollisions(pending, folder, 5);
   if (files.length === 0) {
     console.log(`${config.idType.toUpperCase()} 文件夹没有待上传文件，跳过：${folder}`);
     return completedFiles;
@@ -250,6 +249,7 @@ async function uploadFolder(context, page, config) {
       ),
     });
     await page.waitForTimeout(1500);
+    batch.forEach((file) => updateStage(uploadRoot, withoutExtension(path.basename(file)), "uploading"));
     await setUploadFiles(page, batch);
     await page.waitForTimeout(1000);
     console.log(`已一次性选择第 ${offset + 1}-${batchEnd}/${files.length} 个 ${config.idType.toUpperCase()} 文件：${batch.map((file) => path.basename(file)).join("、")}`);
@@ -311,6 +311,8 @@ async function uploadFolder(context, page, config) {
         const existingFile = findExistingFileInBatch(submitResult.message, batch);
         if (existingFile) {
           console.log(`检测到文件名已存在：${path.basename(existingFile)}，将其视为已处理并重新开始上传流程。`);
+          updateStage(uploadRoot, withoutExtension(path.basename(existingFile)), "uploaded");
+          appendCreateGroupTodoList(uploadRoot, [existingFile]);
           moveToDone([existingFile], folder);
           completedFiles.push(existingFile);
           return completedFiles;
@@ -326,16 +328,36 @@ async function uploadFolder(context, page, config) {
       throw new Error(`${config.idType.toUpperCase()} 第 ${offset / 5 + 1} 批提交重试 60 次后仍未成功，流程超时`);
     }
     console.log(`${config.idType.toUpperCase()} 第 ${offset / 5 + 1} 批已跳转到提交结果页面：${submitSuccessMessage}`);
+    batch.forEach((file) => updateStage(uploadRoot, withoutExtension(path.basename(file)), "uploaded"));
+    appendCreateGroupTodoList(uploadRoot, batch);
     moveToDone(batch, folder);
     completedFiles.push(...batch);
   }
   return completedFiles;
 }
 
-(async () => {
+async function main() {
+  uploadRoot = requireUploadRoot("上传");
   let context;
   let completedFiles = [];
   try {
+    const plan = planUpload(uploadRoot);
+    if (plan.named) prepareUpload(uploadRoot);
+    // A crash after queue persistence but before archive movement must resume
+    // locally; never submit the already acknowledged batch again.
+    for (const config of folderConfigs) {
+      const folder = path.join(uploadRoot, config.idType);
+      const recovered = getFiles(folder, config.idType).filter((file) =>
+        requireMapping(uploadRoot, path.basename(file)).stage === "uploaded");
+      if (recovered.length) {
+        appendCreateGroupTodoList(uploadRoot, recovered);
+        moveToDone(recovered, folder);
+      }
+    }
+    if (!folderConfigs.some((item) => getFiles(path.join(uploadRoot, item.idType), item.idType).length)) {
+      console.log("没有待上传文件，准备或恢复已完成。");
+      return;
+    }
     context = await launchBrowser();
     const page = context.pages()[0] || (await context.newPage());
     page.on('dialog', async (dialog) => {
@@ -362,4 +384,10 @@ async function uploadFolder(context, page, config) {
       console.log("浏览器已关闭，上传脚本结束。");
     }
   }
-})();
+}
+
+if (require.main === module) main().catch((error) => {
+  console.error(`上传流程失败：${error.message}`);
+  process.exitCode = 1;
+});
+module.exports = { main, appendCreateGroupTodoList, platformFileName };

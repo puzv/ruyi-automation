@@ -19,8 +19,8 @@ function validatePasswordStrength(plain) {
 }
 
 function validateUsername(name) {
-  if (typeof name !== 'string' || !/^[a-z0-9_]{3,32}$/.test(name)) {
-    return '用户名需为 3 至 32 位小写字母、数字或下划线';
+  if (typeof name !== 'string' || !/^[a-z0-9_]{3,12}$/.test(name)) {
+    return '用户名需为 3 至 12 位小写字母、数字或下划线';
   }
   return null;
 }

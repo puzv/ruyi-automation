@@ -13,15 +13,15 @@ import {
   ListChecks,
   Monitor,
   MonitorOff,
-  Power,
   RefreshCw,
   CircleUserRound,
   UsersRound,
 } from 'lucide-vue-next'
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { apiFetch } from '../api.js'
+import { formatTime } from '../labels.js'
 
-defineProps({ currentUser: { type: Object, required: true }, page: { type: String, default: '/' } })
+const props = defineProps({ currentUser: { type: Object, required: true }, page: { type: String, default: '/' } })
 defineEmits(['logout'])
 
 const folderInput = ref(null)
@@ -36,52 +36,9 @@ const insightExpanded = ref(true)
 const downloadExpanded = ref(true)
 const headlessMode = ref(true)
 const modeUpdating = ref(false)
-const profileReleasing = ref(false)
-const loginStatus = ref({ datanexus: false, ruyi: false, loggedIn: false, checking: true, error: '' })
-const loginOpening = ref(false)
-let loginStatusRequest = null
-let loginPollTimer = null
-let loginPollAttempts = 0
-
-function stopLoginPolling() {
-  if (loginPollTimer) {
-    window.clearInterval(loginPollTimer)
-    loginPollTimer = null
-  }
-  loginPollAttempts = 0
-}
-
-function startLoginPolling() {
-  stopLoginPolling()
-  // The login window owns the persistent profile until it is closed, so the
-  // status endpoint returns 409 while the user is signing in. Keep probing
-  // after closure instead of requiring a full page refresh.
-  loginPollTimer = window.setInterval(async () => {
-    loginPollAttempts += 1
-    if (loginPollAttempts > 120) {
-      stopLoginPolling()
-      return
-    }
-    try {
-      const response = await apiFetch('/api/login-status')
-      const data = await response.json()
-      if (!data.ok) {
-        if (response.status !== 409) {
-          loginStatus.value = { ...loginStatus.value, checking: false, error: data.message || '暂时无法检查登录状态' }
-        }
-        return
-      }
-      loginStatus.value = { ...data.sites, loggedIn: data.loggedIn, checking: false, error: '' }
-      if (data.loggedIn) {
-        stopLoginPolling()
-        notice.value = '登录状态已更新，两个平台均已登录'
-      }
-    } catch (_) {
-      // The local dev server can briefly restart while the browser closes;
-      // retain the last known state and let the next poll retry.
-    }
-  }, 1500)
-}
+const platformState = ref({ status: 'none', expiresHintAt: null })
+const platformStateError = ref('')
+const platformLoginRequired = ref(false)
 
 const actions = [
   { label: '选择文件夹', hint: '准备原始数据文件', icon: FolderOpen, tone: 'mint' },
@@ -141,77 +98,20 @@ async function toggleRuntimeMode() {
     modeUpdating.value = false
   }
 }
-async function forceReleaseProfile() {
-  if (profileReleasing.value) return
-  const confirmed = window.confirm('确定强制释放所有 Profile 相关资源吗？\n\n这会关闭本服务管理的浏览器和正在运行的任务；如有其他 Chrome 正在使用同一 Profile，也可能被终止。登录信息和 Profile 数据不会删除。')
-  if (!confirmed) return
-  profileReleasing.value = true
-  stopLoginPolling()
-  notice.value = '正在强制释放 Profile 资源，请稍候…'
-  running.value = ''
+async function refreshPlatformState() {
   try {
-    const response = await apiFetch('/api/profile-release', { method: 'POST', headers: { 'content-type': 'application/json' } })
-    const data = await response.json().catch(() => ({}))
-    if (data.ok) {
-      notice.value = data.message || 'Profile 资源已释放'
-      loginStatus.value = { ...loginStatus.value, checking: false, error: '' }
-      await Promise.all([refreshStatus(), refreshLoginStatus()])
-    } else {
-      notice.value = `释放失败：${data.message || '仍有资源占用'}`
-    }
+    const response = await apiFetch('/api/platform-state')
+    const data = await response.json()
+    if (!response.ok || !data.ok) throw new Error(data.message || '无法获取平台登录状态')
+    platformState.value = data
+    platformStateError.value = ''
   } catch (error) {
-    notice.value = `释放失败：${error.message || '无法连接本地服务'}`
-  } finally {
-    profileReleasing.value = false
+    platformStateError.value = error.message || '无法获取平台登录状态'
   }
 }
-async function refreshLoginStatus() {
-  if (loginStatusRequest) return loginStatusRequest
-  loginStatus.value = { ...loginStatus.value, checking: true }
-  loginStatusRequest = (async () => {
-    try {
-      const response = await apiFetch('/api/login-status')
-      const data = await response.json()
-      if (data.ok) {
-        loginStatus.value = { ...data.sites, loggedIn: data.loggedIn, checking: false, error: '' }
-      } else {
-        // A locked/failed probe is not evidence that the user is logged out.
-        // Keep the distinction visible so the user knows to close competing
-        // Chrome windows or retry instead of logging in again.
-        loginStatus.value = { ...loginStatus.value, checking: false, error: data.message || '暂时无法检查登录状态' }
-        notice.value = `登录状态检查失败：${data.message || '请稍后重试'}`
-      }
-    } catch (_) {
-      loginStatus.value = { ...loginStatus.value, checking: false, error: '无法连接本地服务' }
-    } finally {
-      loginStatusRequest = null
-    }
-  })()
-  return loginStatusRequest
-}
-async function openLoginPages() {
-  if (loginOpening.value) return
-  loginOpening.value = true
-  try {
-    const response = await apiFetch('/api/login-open', { method: 'POST' })
-    const data = await response.json()
-    if (data.ok) {
-      loginStatus.value = { ...data.sites, loggedIn: Object.values(data.sites || {}).every(Boolean), checking: false, error: '' }
-      if (data.opened.length) {
-        notice.value = '已打开未登录平台页面，请完成当前登录并关闭窗口，下一平台会自动打开'
-        startLoginPolling()
-      } else {
-        stopLoginPolling()
-        notice.value = '两个平台均已登录'
-      }
-    }
-    else notice.value = `打开登录页面失败：${data.message || '无法启动浏览器'}`
-  } catch (error) {
-    notice.value = `打开登录页面失败：${error.message || '无法连接本地服务'}`
-  } finally { loginOpening.value = false }
-}
-onMounted(() => { refreshStatus(); refreshRuntimeMode(); refreshLoginStatus() })
-onBeforeUnmount(stopLoginPolling)
+defineExpose({ refreshPlatformState })
+watch(() => props.page, (page) => { if (page === '/') refreshPlatformState() })
+onMounted(() => { refreshStatus(); refreshRuntimeMode(); refreshPlatformState() })
 function chooseFolder() { folderInput.value?.click() }
 async function detectCurrentStatus() {
   await refreshStatus()
@@ -258,11 +158,17 @@ async function importFolder(event) {
 async function runTask(label) {
   const task = taskByLabel[label]
   if (!task || running.value) return
+  platformLoginRequired.value = false
   running.value = task
   notice.value = `正在启动${label}...`
   const response = await apiFetch(`/api/run/${task}`, { method: 'POST' })
   const data = await response.json()
-  if (!data.ok) { notice.value = data.message; running.value = ''; return }
+  if (!data.ok) {
+    platformLoginRequired.value = data.code === 'PLATFORM_LOGIN_REQUIRED'
+    notice.value = platformLoginRequired.value ? '请先完成平台登录' : data.message
+    running.value = ''
+    return
+  }
   jobId.value = data.id
   pollJob(label)
 }
@@ -274,6 +180,7 @@ async function pollJob(label) {
   running.value = ''
   notice.value = job.code === 0 ? `${label}已完成` : `${label}执行失败，请查看终端日志`
   refreshStatus()
+  refreshPlatformState()
   if (job.code === 0 && ['上传文件', '创建人群', '人群洞悉'].includes(label)) {
     notice.value = `${label}已完成，正在检测当前状态...`
     await detectCurrentStatus()
@@ -292,12 +199,13 @@ async function pollJob(label) {
         </div>
       </div>
 
-      <button class="login-status" type="button" :class="{ logged: loginStatus.loggedIn }" :disabled="loginOpening || loginStatus.checking" :title="loginStatus.error || (loginStatus.loggedIn ? '两个平台均已登录' : '点击打开未登录的平台页面')" @click="openLoginPages">
-        <CircleUserRound :size="26" /><span>{{ loginStatus.checking ? '检查登录状态…' : loginStatus.error ? '登录状态不可用' : loginStatus.loggedIn ? '平台已登录' : '需要登录' }}</span>
-      </button>
+      <a class="login-status" :class="{ logged: !platformStateError && platformState.status === 'valid' }" :title="platformStateError || (platformState.status === 'valid' ? `预计过期时间：${formatTime(platformState.expiresHintAt)}` : '点击进入平台登录')" href="#/platform-login">
+        <CircleUserRound :size="26" /><span>{{ platformStateError ? '登录状态不可用' : platformState.status === 'valid' ? '平台已登录' : platformState.status === 'expired' ? '平台登录已过期' : '需要平台登录' }}</span>
+      </a>
       <div class="side-section-label">工作流</div>
       <nav class="side-nav" aria-label="工作流导航">
         <a class="side-link" :class="{ active: page === '/' }" href="#/"><ListChecks :size="17" /> 操作面板</a>
+        <a class="side-link" :class="{ active: page === '/platform-login' }" href="#/platform-login"><CircleUserRound :size="17" /> 平台登录</a>
         <a class="side-link" :class="{ active: page === '/logs' }" href="#/logs"><ListChecks :size="17" /> 我的操作记录</a>
         <template v-if="currentUser.role === 'admin'">
           <a class="side-link" :class="{ active: page === '/admin/users' }" href="#/admin/users"><UsersRound :size="17" /> 用户管理</a>
@@ -323,7 +231,6 @@ async function pollJob(label) {
             <span class="mode-option" :class="{ selected: !headlessMode }"><Monitor :size="16" /><span>调试模式</span></span>
             <span class="mode-option" :class="{ selected: headlessMode }"><MonitorOff :size="16" /><span>后台模式</span></span>
           </button>
-          <button class="help-button" type="button" :disabled="profileReleasing" title="关闭浏览器、任务并释放共享 Profile 资源" @click="forceReleaseProfile"><Power :size="18" /><span>{{ profileReleasing ? '释放中…' : '释放 Profile' }}</span></button>
           <a class="help-button" href="https://cf.ge.cn/pages/viewpage.action?pageId=289808671" target="_blank" rel="noopener noreferrer" aria-label="帮助"><CircleHelp :size="18" /><span>使用帮助</span></a>
         </div>
       </header>
@@ -341,7 +248,7 @@ async function pollJob(label) {
       <section id="operations" class="operations-section">
         <div class="section-heading"><div><p class="section-kicker">QUICK ACTIONS</p><h3>快捷操作</h3></div><span class="section-note">共 6 项操作</span></div>
         <div class="action-grid">
-          <button v-for="(action, index) in actions" :key="action.label" class="action-card" :class="[`tone-${action.tone}`, { running: running === taskByLabel[action.label] }]" :disabled="profileReleasing" type="button" @click="action.label === '选择文件夹' ? chooseFolder() : action.label === '检测当前状态' ? detectCurrentStatus() : runTask(action.label)">
+          <button v-for="(action, index) in actions" :key="action.label" class="action-card" :class="[`tone-${action.tone}`, { running: running === taskByLabel[action.label] }]" type="button" @click="action.label === '选择文件夹' ? chooseFolder() : action.label === '检测当前状态' ? detectCurrentStatus() : runTask(action.label)">
             <span class="action-index">0{{ index + 1 }}</span>
             <span class="action-icon"><component :is="action.icon" :size="22" stroke-width="1.8" /></span>
             <span class="action-copy"><strong>{{ action.label }}</strong><small>{{ action.hint }}</small></span>
@@ -372,7 +279,7 @@ async function pollJob(label) {
             </div>
             </template>
           </div>
-          <div class="ready-panel"><div class="ready-icon"><CheckCircle2 :size="22" /></div><div><strong>{{ notice }}</strong><p>选择一个操作以开始本次任务</p></div></div>
+          <div class="ready-panel"><div class="ready-icon"><CheckCircle2 :size="22" /></div><div><strong>{{ notice }}</strong><a v-if="platformLoginRequired" class="platform-login-link" href="#/platform-login">前往平台登录</a><p>选择一个操作以开始本次任务</p></div></div>
         </div>
         <pre v-if="jobLog" class="job-log">{{ jobLog }}</pre>
       </section>

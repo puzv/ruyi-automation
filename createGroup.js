@@ -8,6 +8,7 @@ const { readJsonArray, writeJsonArray } = require("./lib/files");
 const { launchBrowser, closeBrowserContext } = require("./lib/browser");
 const { checkPreflight } = require("./lib/preflight");
 const { navigateWithLogin } = require("./lib/login");
+const { requireMapping, resolveFileType, updateStage } = require("./lib/file-manifest");
 
 const groupUrls = {
   idfa: urls.idfaUpload,
@@ -19,12 +20,11 @@ function withoutExtension(fileName) {
   return path.basename(fileName).replace(/\.(?:txt|csv)$/i, "");
 }
 
-function getGroupType(fileName) {
-  const lowerName = path.basename(fileName).toLowerCase();
-  if (lowerName.includes("pn")) return "pn";
-  if (lowerName.includes("idfa")) return "idfa";
-  if (lowerName.includes("oaid")) return "oaid";
-  return null;
+function getGroupType(fileName, uploadRoot) {
+  if (uploadRoot) return resolveFileType(uploadRoot, fileName);
+  // Compatibility for the standalone helper used by older integrations.
+  const { inferType } = require("./lib/file-manifest");
+  return inferType(fileName);
 }
 
 const getUploadRoot = () => requireUploadRoot();
@@ -48,6 +48,7 @@ function readNextFileName(uploadRoot) {
     typeof name === "string" && !analysedSet.has(withoutExtension(name))
   ));
   if (!fileName) throw new Error("创建任务清单中没有待处理文件。");
+  requireMapping(uploadRoot, fileName);
   return { fileName, todoPath, analysePath, analysed };
 }
 
@@ -194,7 +195,7 @@ async function main() {
   checkPreflight({ taskFiles: ["createGroupToDoList.json", "creategrouptodolist.json", "analyseToDoList.json"] });
   const uploadRoot = getUploadRoot();
   const { fileName, todoPath, analysePath, analysed } = readNextFileName(uploadRoot);
-  const groupType = getGroupType(fileName);
+  const groupType = getGroupType(fileName, uploadRoot);
   if (!groupType) {
     console.error(`文件名中不含 idfa、oaid 或 pn，无法确定创建地址：${fileName}`);
     process.exitCode = 1;
@@ -220,6 +221,7 @@ async function main() {
     await fillGroupInfo(page, fileName);
     await submitGroup(page);
     recordAnalysedFile(analysePath, fileName, analysed);
+    updateStage(uploadRoot, fileName, "created");
     removeFromCreateTodoList(todoPath, fileName);
     console.log(`已根据 ${fileName} 跳转到 ${groupType.toUpperCase()} 创建地址：${url}`);
   } finally {

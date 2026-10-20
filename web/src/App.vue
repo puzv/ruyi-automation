@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { apiFetch } from './api.js'
 import WorkbenchView from './views/WorkbenchView.vue'
+import PlatformLoginView from './views/PlatformLoginView.vue'
 import LoginView from './views/LoginView.vue'
 import ChangePasswordView from './views/ChangePasswordView.vue'
 import MyLogsView from './views/MyLogsView.vue'
@@ -9,11 +10,12 @@ import AdminUsersView from './views/AdminUsersView.vue'
 import AdminLogsView from './views/AdminLogsView.vue'
 
 const currentUser = ref(null)
+const workbench = ref(null)
 const loading = ref(true)
 const error = ref('')
 const page = ref('/')
 const loggingOut = ref(false)
-const routes = ['/', '/logs', '/admin/users', '/admin/logs', '/password']
+const routes = ['/', '/platform-login', '/logs', '/admin/users', '/admin/logs', '/password']
 
 function syncPage() {
   let next = location.hash.slice(1) || '/'
@@ -95,9 +97,10 @@ onBeforeUnmount(() => {
     <div v-if="error" class="global-error" role="alert">{{ error }} <button type="button" @click="loadUser">重试</button></div>
     <LoginView v-if="!currentUser && !error" @logged-in="loggedIn" />
     <ChangePasswordView v-else-if="currentUser?.mustChangePassword" forced @changed="passwordChanged" @logout="logout" />
-    <WorkbenchView v-else-if="currentUser" :current-user="currentUser" :page="page" @logout="logout">
+    <WorkbenchView v-else-if="currentUser" ref="workbench" :current-user="currentUser" :page="page" @logout="logout">
       <template v-if="page !== '/'" #default>
-        <MyLogsView v-if="page === '/logs'" />
+        <PlatformLoginView v-if="page === '/platform-login'" :current-user="currentUser" @state-changed="workbench?.refreshPlatformState()" />
+        <MyLogsView v-else-if="page === '/logs'" />
         <AdminUsersView v-else-if="page === '/admin/users'" :current-user="currentUser" />
         <AdminLogsView v-else-if="page === '/admin/logs'" />
         <ChangePasswordView v-else-if="page === '/password'" @changed="passwordChanged" @logout="logout" />

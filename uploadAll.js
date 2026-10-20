@@ -4,17 +4,12 @@ const { spawnSync } = require("child_process");
 
 const { requireUploadRoot } = require("./lib/paths");
 const { checkPreflight } = require("./lib/preflight");
+const { planUpload, prepareUpload, pendingCandidates } = require("./lib/file-manifest");
 
 function getPendingFiles(uploadRoot) {
-  return ["idfa", "oaid", "pn"].flatMap((idType) => {
-    const folder = path.join(uploadRoot, idType);
-    if (!fs.existsSync(folder)) return [];
-
-    return fs.readdirSync(folder)
-      .map((name) => path.join(folder, name))
-      .filter((file) => fs.statSync(file).isFile())
-      .filter((file) => path.basename(file).toLowerCase().includes(idType));
-  });
+  return pendingCandidates(uploadRoot)
+    .filter((item) => !path.relative(uploadRoot, item.path).startsWith(`raw${path.sep}`))
+    .map((item) => item.path);
 }
 
 function normalizeRawFileNames(uploadRoot) {
@@ -122,18 +117,20 @@ function runScript(scriptName) {
 }
 
 function main() {
-  checkPreflight({ taskFiles: ["createGroupToDoList.json", "analyseToDoList.json", "done.json"] });
   const uploadRoot = requireUploadRoot("upload");
+  const plan = planUpload(uploadRoot);
+  checkPreflight({ taskFiles: ["createGroupToDoList.json", "analyseToDoList.json", "done.json"] });
 
   console.log("开始整理数据文件...");
   try {
-    normalizeRawFileNames(uploadRoot);
+    if (plan.named) prepareUpload(uploadRoot);
+    else normalizeRawFileNames(uploadRoot);
   } catch (error) {
     console.error(`文件预处理失败：${error.message}`);
     process.exitCode = 1;
     return;
   }
-  if (!runScript("move.js")) {
+  if (!plan.named && !runScript("move.js")) {
     process.exitCode = 1;
     return;
   }
@@ -160,4 +157,10 @@ function main() {
   console.log("所有数据文件均已处理完成。");
 }
 
-main();
+if (require.main === module) {
+  try { main(); } catch (error) {
+    console.error(`上传任务失败：${error.message}`);
+    process.exitCode = 1;
+  }
+}
+module.exports = { main, getPendingFiles, normalizeRawFileNames };

@@ -11,7 +11,8 @@ function sanitizeDetail(value, ancestors = new WeakSet()) {
     result = value.slice(0, 100).map((item) => sanitizeDetail(item, ancestors));
   } else {
     result = Object.fromEntries(Object.entries(value)
-      .filter(([key]) => !/password|token|cookie|secret|state/i.test(key))
+      .filter(([key, item]) => /^(stateRefreshed|stateExpired)$/.test(key) && typeof item === 'boolean'
+        || !/password|token|cookie|secret|state/i.test(key))
       .map(([key, item]) => [key, sanitizeDetail(item, ancestors)]));
   }
   ancestors.delete(value);

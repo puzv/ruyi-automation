@@ -12,6 +12,7 @@ chromium-*.tar.gz.sha256
 ruyi-profile/*
 !ruyi-profile/.gitkeep
 upload/conclusion/
+/upload/users/
 upload/*.json
 !upload/createGroupToDoList.json
 !upload/analyseToDoList.json

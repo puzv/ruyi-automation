@@ -7,6 +7,7 @@ const { sql } = require('kysely');
 const { createDb, readDbConfig } = require('../db');
 const users = require('../server/repos/users');
 const { hashPassword, verifyPassword } = require('../server/auth/password');
+const { loadKeys } = require('../server/platform-state/crypto');
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruyi-auth-test-'));
 const previousUploadDir = process.env.RUYI_UPLOAD_DIR;
@@ -14,15 +15,13 @@ process.env.RUYI_UPLOAD_DIR = tempDir;
 
 // 在加载路由前封住真实操作，鉴权回归也不能启动浏览器或脚本。
 const browser = require('../lib/browser');
-const preflight = require('../lib/preflight');
 const childProcess = require('node:child_process');
-const originals = { ...browser, forceReleaseProfile: preflight.forceReleaseProfile };
+const originals = { ...browser };
 const processMethods = ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork'];
 const originalProcessMethods = Object.fromEntries(processMethods.map((name) => [name, childProcess[name]]));
-const unexpectedOperation = () => { throw new Error('测试不得启动浏览器、释放真实 Profile 或运行脚本'); };
+const unexpectedOperation = () => { throw new Error('测试不得启动浏览器、运行脚本'); };
 browser.launchBrowser = unexpectedOperation;
 browser.closeBrowserContext = async (context) => context.close();
-preflight.forceReleaseProfile = unexpectedOperation;
 for (const name of processMethods) childProcess[name] = unexpectedOperation;
 const { buildApp } = require('../server/app');
 
@@ -64,10 +63,12 @@ async function main() {
     const userId = await users.createUser(db, {
       username: 'auth_user', displayName: '认证用户', passwordHash, mustChangePassword: false,
     });
+    // 模拟已有超长用户名，登录与改密不应受新建用户限制影响。
     const requiredId = await users.createUser(db, {
       username: 'auth_required', displayName: '首次登录用户', passwordHash,
     });
-    app = buildApp({ db, logger: false, webDist: path.join(tempDir, 'missing-dist') });
+    const stateKeys = loadKeys({ RUYI_STATE_KEY: crypto.randomBytes(32).toString('base64') });
+    app = buildApp({ db, stateKeys, logger: false, webDist: path.join(tempDir, 'missing-dist') });
     const request = (method, url, cookie, payload) => app.inject({
       method, url, ...(cookie ? { headers: { cookie } } : {}), ...(payload === undefined ? {} : { payload }),
     });
@@ -143,6 +144,7 @@ async function main() {
     const createPayload = { username: 'auth_created', displayName: '管理员创建', password, role: 'user' };
     const created = await adminRequest('POST', '/api/admin/users', createPayload);
     assert.equal(created.statusCode, 200);
+    assert.equal(createPayload.username.length, 12);
     const createdUser = await users.findByUsername(db, createPayload.username);
     assert.equal(createdUser.created_by, adminId);
     assert.equal(createdUser.must_change_password, 1);
@@ -150,6 +152,11 @@ async function main() {
     const duplicate = await adminRequest('POST', '/api/admin/users', createPayload);
     assert.equal(duplicate.statusCode, 409);
     assert.equal(duplicate.json().message, '用户名已存在');
+    const longUsername = 'a'.repeat(13);
+    const tooLong = await adminRequest('POST', '/api/admin/users', { ...createPayload, username: longUsername });
+    assert.equal(tooLong.statusCode, 400);
+    assert.equal(tooLong.json().message, '用户名需为 3 至 12 位小写字母、数字或下划线');
+    assert.equal(await users.findByUsername(db, longUsername), undefined);
     for (const payload of [
       { ...createPayload, username: 'INVALID' }, { ...createPayload, username: 'auth_weak', password: 'short' },
       { ...createPayload, username: 'auth_role', role: 'root' }, { ...createPayload, username: 'auth_long', password: '中'.repeat(25) },
@@ -254,7 +261,6 @@ main().catch((error) => {
 }).finally(() => {
   browser.launchBrowser = originals.launchBrowser;
   browser.closeBrowserContext = originals.closeBrowserContext;
-  preflight.forceReleaseProfile = originals.forceReleaseProfile;
   for (const name of processMethods) childProcess[name] = originalProcessMethods[name];
   if (previousUploadDir === undefined) delete process.env.RUYI_UPLOAD_DIR;
   else process.env.RUYI_UPLOAD_DIR = previousUploadDir;

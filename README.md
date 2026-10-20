@@ -9,12 +9,13 @@
 ├── config.js                  # 统一运行配置
 ├── config.example.js          # 配置项示例
 ├── lib/                       # 公共路径、文件和浏览器工具
-├── upload/                    # 运行数据和任务清单
+├── upload/                    # 数据根目录；直接运行脚本仍使用以下旧单机目录
 │   ├── raw/                   # 待整理原始文件
 │   ├── idfa/                  # IDFA 待上传文件
 │   ├── oaid/                  # OAID 待上传文件
 │   ├── pn/                    # PN 手机号 MD5 待上传文件
-│   └── result/                # 下载结果
+│   ├── result/                # 下载结果
+│   └── users/<用户名>/        # 登录用户的独立工作区，包含同样的五个目录及 JSON 清单
 ├── ruyi-profile/              # 本机登录状态和浏览器配置
 ├── move.js
 ├── uploadAll.js
@@ -42,6 +43,27 @@ node downloadAll.js
 生产方式：在项目根目录执行 `npm run build:web`，完成后执行 `npm start`，打开 http://127.0.0.1:5173。可通过 `RUYI_SERVER_PORT` 和 `RUYI_SERVER_HOST` 环境变量修改端口和监听地址。
 
 开发方式：在项目根目录打开两个终端，分别运行 `npm run dev:server` 和 `npm run dev:web`，打开 http://localhost:5173（Vite 开发服务器只监听 localhost，用 127.0.0.1 可能打不开）。修改前端代码会热更新；修改 `server/` 后需重启 `dev:server`。
+
+## 用户工作区与平台名称
+
+网页登录后，文件、状态和任务记录按当前账号隔离，工作区由服务端计算为 `<数据根目录>/users/<用户名>/`。导入保留原始文件名，保存在 `raw/<导入标识>/<文件序号>/<原始文件名>`；多次导入同名文件也不会覆盖。上传任务会在整理文件或启动浏览器前检查全部待上传文件，遇到重复原始文件名时停止，请先处理重复文件后重试。同一用户运行任务期间不能继续导入，当前浏览器 Profile 仍全局只允许一个任务运行。
+
+新任务的平台名称格式为 `<用户名>_<idfa|oaid|pn>_<8位任务短串>_<序号>`，最多 30 个 Unicode 字符，名称空间不足时会提前报错。工作区的 `file-manifest.json` 保存平台名称、原始文件名和完整上传任务 ID；重试沿用已有映射。下载结果恢复原始主文件名并保留实际下载格式的扩展名，已有同名结果会报错，待下载清单保留。不要手工删除映射清单。未设置 `RUYI_USER`、`RUYI_JOB_ID` 直接运行脚本时，继续使用旧单机命名方式。
+
+## 旧工作区归入 pzw
+
+旧数据已指定归属 `pzw`。迁移工具默认预检，不会创建或复制文件；默认源为 `config.uploadRoot`，目标为该目录下的 `users/pzw/`：
+
+```bash
+node scripts/migrate-user-workspace.js
+node scripts/migrate-user-workspace.js --apply
+```
+
+自定义数据根目录可通过 `RUYI_UPLOAD_DIR` 或 `--source /path/to/data` 指定。请在停止导入和任务后先运行预检，再执行 `--apply`。工具只复制 `raw/`、`idfa/`、`oaid/`、`pn/`、`result/`、历史 `conclusion/`、三个任务 JSON 清单（兼容旧创建清单大小写）和确切名称的配套说明文件 `总结报告生成流程.md`，保留文件名、原始字节和空目录；说明文件不解析内容，其他 Markdown 文件和未知目录仍会报错。迁移不会给历史文件重新分配平台名称。隐藏项、登录态及浏览器 Profile 不参与迁移，`users/` 和迁移临时目录也不参与源目录扫描。其他未知根目录条目、符号链接、坏清单、路径风险或已存在的目标都会阻止迁移。
+
+复制在同级临时目录完成，逐文件进行 SHA-256 字节校验后再发布目标，输出文件数、总字节数和校验数。原目录保留；重复执行不会合并或覆盖已有目标。失败时保留临时目录供检查，不会自动删除数据；若目标尚未创建，排除失败原因后可重新执行。迁移工具不读取 `.env`，也不连接数据库。
+
+无需数据库或真实浏览器的阶段 3 测试为 `npm run test:phase3`，已接入 `npm test`；数据库测试仍仅由 `npm run test:all` 串行运行。
 
 ## 配置覆盖
 
@@ -123,4 +145,4 @@ GITEE_BROWSER_RELEASE_URL=https://gitee.com/puzvv/ruyi-automation/releases/downl
 npm run browser:install -- --arch arm64
 ```
 
-任务清单 JSON 应放在 `upload/` 目录中，且内容必须是字符串数组。
+任务清单 JSON 应放在当前工作区根目录中，且内容必须是字符串数组；旧单机模式的工作区仍为 `upload/`。

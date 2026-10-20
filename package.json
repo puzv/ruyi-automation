@@ -12,7 +12,8 @@
     "test:pn": "node test/pn-flow.test.js",
     "browser:split": "node scripts/split-playwright-browsers.js",
     "browser:install": "node scripts/install-playwright-browser.js",
-    "test": "node --check config.js && node --check createAllGroup.js && node --check lib/playwright-env.js && node --check lib/macos-arch.js && node --check scripts/split-playwright-browsers.js && node --check scripts/install-playwright-browser.js && node test/macos-arch.test.js && node test/migration-guard.test.js && node test/db-env.test.js && node test/server-app.test.js && node test/server-routes.test.js",
+    "test": "node --check config.js && node --check createAllGroup.js && node --check lib/playwright-env.js && node --check lib/macos-arch.js && node --check scripts/split-playwright-browsers.js && node --check scripts/install-playwright-browser.js && node test/macos-arch.test.js && node test/migration-guard.test.js && node test/db-env.test.js && node test/server-app.test.js && node test/server-routes.test.js && node test/frontend-platform-login.test.js && npm run test:phase3",
+    "test:phase3": "node --check scripts/migrate-user-workspace.js && node test/server-isolation.test.js && node test/file-manifest.test.js && node test/file-workflow.test.js && node test/pn-flow.test.js && node test/workspace-migration.test.js",
     "start": "node server/index.js",
     "build:web": "npm --prefix web run build",
     "dev:server": "RUYI_SERVER_PORT=5174 node server/index.js",
@@ -21,8 +22,12 @@
     "user:create-admin": "node scripts/create-admin.js",
     "test:db": "RUYI_DB_HOST=127.0.0.1 RUYI_DB_PORT=3306 RUYI_DB_USER=ruyi RUYI_DB_PASSWORD=ruyi RUYI_DB_NAME=ruyi_test node test/db-repos.test.js",
     "test:auth": "RUYI_DB_HOST=127.0.0.1 RUYI_DB_PORT=3306 RUYI_DB_USER=ruyi RUYI_DB_PASSWORD=ruyi RUYI_DB_NAME=ruyi_test node test/server-auth.test.js",
-    "test:all": "npm test && npm run test:db && npm run test:auth && npm run test:audit",
-    "test:audit": "RUYI_DB_HOST=127.0.0.1 RUYI_DB_PORT=3306 RUYI_DB_USER=ruyi RUYI_DB_PASSWORD=ruyi RUYI_DB_NAME=ruyi_test node test/server-audit.test.js"
+    "test:all": "npm test && npm run test:db && npm run test:auth && npm run test:audit && npm run test:platform-state && npm run test:job-state && npm run test:platform-login && npm run test:vnc-proxy",
+    "test:platform-login": "RUYI_DB_HOST=127.0.0.1 RUYI_DB_PORT=3306 RUYI_DB_USER=ruyi RUYI_DB_PASSWORD=ruyi RUYI_DB_NAME=ruyi_test node test/platform-login.test.js",
+    "test:platform-state": "RUYI_DB_HOST=127.0.0.1 RUYI_DB_PORT=3306 RUYI_DB_USER=ruyi RUYI_DB_PASSWORD=ruyi RUYI_DB_NAME=ruyi_test node test/platform-state.test.js",
+    "test:job-state": "RUYI_DB_HOST=127.0.0.1 RUYI_DB_PORT=3306 RUYI_DB_USER=ruyi RUYI_DB_PASSWORD=ruyi RUYI_DB_NAME=ruyi_test node test/job-state.test.js",
+    "test:audit": "RUYI_DB_HOST=127.0.0.1 RUYI_DB_PORT=3306 RUYI_DB_USER=ruyi RUYI_DB_PASSWORD=ruyi RUYI_DB_NAME=ruyi_test node test/server-audit.test.js",
+    "test:vnc-proxy": "RUYI_DB_HOST=127.0.0.1 RUYI_DB_PORT=3306 RUYI_DB_USER=ruyi RUYI_DB_PASSWORD=ruyi RUYI_DB_NAME=ruyi_test node test/vnc-proxy.test.js"
   },
   "keywords": [],
   "author": "",
@@ -36,6 +41,7 @@
     "fastify": "^5.12.7",
     "kysely": "^0.29.7",
     "mysql2": "^3.24.6",
-    "playwright": "1.62.1"
+    "playwright": "1.62.1",
+    "ws": "^8.22.0"
   }
 }

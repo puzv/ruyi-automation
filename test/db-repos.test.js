@@ -36,9 +36,9 @@ async function main() {
     for (const value of ["a".repeat(73), "中".repeat(25), "😀".repeat(19)]) {
       assert.strictEqual(validatePasswordStrength(value), "密码不能超过 72 个字节");
     }
-    for (const value of ["abc", "a_1", "a".repeat(32)]) assert.strictEqual(validateUsername(value), null);
-    for (const value of ["ab", "a".repeat(33), "ABC", "a-b", "中文名", "abc\n", null, 123]) {
-      assert.strictEqual(typeof validateUsername(value), "string");
+    for (const value of ["abc", "a_1", "a".repeat(12)]) assert.strictEqual(validateUsername(value), null);
+    for (const value of ["ab", "a".repeat(13), "a".repeat(33), "ABC", "a-b", "中文名", "abc\n", null, 123]) {
+      assert.strictEqual(validateUsername(value), "用户名需为 3 至 12 位小写字母、数字或下划线");
     }
 
     const id = await users.createUser(db, { username: "repo_test", displayName: "中文测试用户", passwordHash });
@@ -166,6 +166,11 @@ async function main() {
     const weak = cli("short", "weak_user");
     assert.strictEqual(weak.status, 1);
     assert.match(weak.stderr, /密码至少/);
+    const longUsername = "a".repeat(13);
+    const tooLong = cli("Test12345", longUsername);
+    assert.strictEqual(tooLong.status, 1);
+    assert.match(tooLong.stderr, /用户名需为 3 至 12 位小写字母、数字或下划线/);
+    assert.strictEqual(await users.findByUsername(db, longUsername), undefined);
     assert.strictEqual(cli(undefined, "no_password").status, 1);
     assert.strictEqual(await users.findByUsername(db, "weak_user"), undefined);
     assert.strictEqual((await db.selectFrom("ruyi_operation_logs").selectAll().execute()).length, 1);

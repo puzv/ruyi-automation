@@ -26,6 +26,8 @@
 - 平台登录态使用 Playwright storageState（见 `lib/storage-state.js`、`lib/browser.js` 的 `RUYI_STATE_FILE` 模式）。
 - 判断“已登录”必须依据登录后才出现的业务元素并保持数秒，不能只看 URL 或页面文字。
 - 检测到已退出登录时不得回写登录态。
+- 登录态明文（storageState JSON）只能存在于内存或权限 600 的临时文件中，用完立即删除；不得写日志、不得出现在接口响应和操作记录中。加密密钥 `RUYI_STATE_KEY` 只从环境变量读取。
+- 测试中使用伪造的 storageState（例如 `{ cookies: [], origins: [] }`），不得读取 `state-test.json`。
 
 ## 完成任务前
 - 运行 `npm test` 并确保通过；新增逻辑需补充 `test/` 下的测试（使用 Node 自带 `assert`，与现有测试一致）。

@@ -10,13 +10,11 @@ process.env.RUYI_UPLOAD_DIR = tempDir;
 
 // 互斥分支一旦失效就立即失败，避免测试意外启动浏览器或真实任务。
 const browser = require('../lib/browser');
-const preflight = require('../lib/preflight');
 const childProcess = require('node:child_process');
-const originals = { ...browser, forceReleaseProfile: preflight.forceReleaseProfile, spawn: childProcess.spawn };
-const unexpectedOperation = () => { throw new Error('测试不得启动浏览器、释放真实 Profile 或运行脚本'); };
+const originals = { ...browser, spawn: childProcess.spawn };
+const unexpectedOperation = () => { throw new Error('测试不得启动浏览器、运行脚本'); };
 browser.launchBrowser = unexpectedOperation;
 browser.closeBrowserContext = async (context) => context.close();
-preflight.forceReleaseProfile = unexpectedOperation;
 childProcess.spawn = unexpectedOperation;
 const { buildApp } = require('../server/app');
 const state = require('../server/state');
@@ -60,23 +58,16 @@ async function main() {
     assert.equal(invalidMode.statusCode, 400);
     assert.deepEqual(invalidMode.json(), { ok: false, message: 'headless 必须是布尔值' });
 
-    state.profileReleaseRunning = true;
-    const emptyJson = await app.inject({ method: 'POST', url: '/api/profile-release', headers: { 'content-type': 'application/json' } });
-    assert.equal(emptyJson.statusCode, 409);
-    assert.deepEqual(emptyJson.json(), { ok: false, message: 'Profile 释放正在进行，请稍候。' });
-    state.profileReleaseRunning = false;
-
-    state.profileProbeRunning = true;
-    for (const [method, url, message] of [
-      ['GET', '/api/login-status', '登录状态检查正在进行，请稍后重试。'],
-      ['GET', '/api/platform-status', '平台状态检查正在进行，请稍后重试。'],
-      ['POST', '/api/login-open', '浏览器 Profile 正在执行其他操作，请稍后重试。'],
+    for (const [method, url] of [
+      ['POST', '/api/login-open'], ['POST', '/api/profile-release'], ['GET', '/api/login-status'],
     ]) {
       const response = await app.inject({ method, url });
-      assert.equal(response.statusCode, 409);
-      assert.deepEqual(response.json(), { ok: false, message });
+      assert.equal(response.statusCode, 404);
+      assert.deepEqual(response.json(), { ok: false, message: '接口不存在' });
     }
-    state.profileProbeRunning = false;
+    const emptyJson = await app.inject({ method: 'POST', url: '/api/runtime-mode', headers: { 'content-type': 'application/json' } });
+    assert.equal(emptyJson.statusCode, 400);
+    assert.deepEqual(emptyJson.json(), { ok: false, message: 'headless 必须是布尔值' });
 
     const content = '测试文件内容\nabc';
     const upload = await app.inject({ method: 'POST', url: '/api/import-folder', ...multipart([
@@ -167,28 +158,9 @@ async function main() {
     assert.equal(job.statusCode, 200);
     assert.deepEqual(job.json(), { running: true });
 
-    // 暂时移除运行中任务，确保每个 409 都来自指定的互斥条件。
-    const runningJob = state.jobs.get('fake');
-    state.jobs.delete('fake');
-    try {
-      for (const [key, value, message] of [
-        ['profileReleaseRunning', true, 'Profile 资源释放正在进行，请稍后重试'],
-        ['profileProbeRunning', true, '登录或平台状态检查正在进行，请稍后重试'],
-        ['loginFlow', {}, '登录窗口仍在使用 Profile，请完成登录并关闭窗口后再运行任务'],
-      ]) {
-        const previous = state[key];
-        try {
-          state[key] = value;
-          const response = await app.inject({ method: 'POST', url: '/api/run/upload' });
-          assert.equal(response.statusCode, 409);
-          assert.deepEqual(response.json(), { ok: false, message });
-        } finally {
-          state[key] = previous;
-        }
-      }
-    } finally {
-      state.jobs.set('fake', runningJob);
-    }
+    const platformBusy = await app.inject('/api/platform-status');
+    assert.equal(platformBusy.statusCode, 409);
+    assert.deepEqual(platformBusy.json(), { ok: false, message: '已有脚本正在运行，请等待完成' });
 
     const completedJob = { id: 't1', task: 'upload', running: false, output: 'hello', code: 0 };
     Object.defineProperty(completedJob, 'child', { value: { pid: 123 }, enumerable: false });
@@ -318,20 +290,15 @@ async function main() {
     let closed = false;
     context.close = async () => { closed = true; context.emit('close'); };
     trackContext(context);
-    state.loginContexts.add(context);
     await app.close();
     assert.equal(closed, true);
     assert.equal(state.activeContexts.size, 0);
-    assert.equal(state.loginContexts.size, 0);
     assert.equal(state.jobs.get('fake').running, true);
   } finally {
     await app.close();
     state.jobs.clear();
-    state.profileProbeRunning = false;
-    state.profileReleaseRunning = false;
     browser.launchBrowser = originals.launchBrowser;
     browser.closeBrowserContext = originals.closeBrowserContext;
-    preflight.forceReleaseProfile = originals.forceReleaseProfile;
     childProcess.spawn = originals.spawn;
     if (previousUploadDir === undefined) delete process.env.RUYI_UPLOAD_DIR;
     else process.env.RUYI_UPLOAD_DIR = previousUploadDir;

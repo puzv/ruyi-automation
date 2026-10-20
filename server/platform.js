@@ -1,223 +1,24 @@
-const { spawn } = require('node:child_process')
 const { launchBrowser, closeBrowserContext } = require('../lib/browser.js')
 const { withoutExtension } = require('./workspace')
 const state = require('./state')
 
-function launchPlatformBrowser() { return launchBrowser({ headless: state.headlessMode }) }
+function launchPlatformBrowser(storageState) { return launchBrowser({ headless: state.headlessMode, ...(storageState ? { storageState } : {}) }) }
 
 function trackContext(context) {
   state.activeContexts.add(context)
   context.on('close', () => {
     state.activeContexts.delete(context)
-    state.loginContexts.delete(context)
   })
   return context
 }
 
-function openExternalUrl(url) {
-  if (process.platform === 'darwin') spawn('open', ['-a', 'Google Chrome', url], { detached: true, stdio: 'ignore' }).unref()
-  else if (process.platform === 'win32') spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' }).unref()
-  else spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref()
-}
-
-function sleep(milliseconds) { return new Promise((resolve) => setTimeout(resolve, milliseconds)) }
-
-/**
- * Fallback for the case where an existing Chrome process already owns the
- * persistent profile. We cannot observe its tab close event, so poll until
- * the profile is released, verify the just-finished site, then open exactly
- * one next login URL. This replaces the old missing.forEach(openUrl) behavior
- * that opened both login pages at once.
- */
-async function advanceExternalLoginFlow(flow) {
-  if (!flow || flow.cancelled || state.loginFlow !== flow || flow.transitioning) return
-  flow.transitioning = true
-  try {
-    while (!flow.cancelled && state.loginFlow === flow) {
-      // The external Chrome must release the profile before Playwright can
-      // inspect cookies. A short grace period avoids racing window startup.
-      await sleep(1500)
-      if (!waitForProfileRelease({ timeoutMs: 0 })) continue
-      let sites
-      try { sites = await inspectLoginStatus() } catch (_) { continue }
-      const current = flow.currentKey
-      if (current && !sites[current]) {
-        // The user closed the page before authentication completed. Reopen
-        // only that page; never advance to the second site prematurely.
-        openExternalUrl(loginTargets[current].url)
-        continue
-      }
-      const next = flow.pending.shift()
-      if (!next) {
-        state.loginFlow = null
-        return
-      }
-      flow.currentKey = next
-      openExternalUrl(loginTargets[next].url)
-      // Give Chrome time to acquire the lock before the next poll cycle.
-      await sleep(1000)
-    }
-  } finally {
-    flow.transitioning = false
-  }
-}
-
-/**
- * Open missing login pages one at a time. A persistent context keeps the
- * profile locked until it is closed, so a page-close event must advance the
- * flow explicitly; waiting only for context.close() leaves the first page's
- * profile lock in place when the user closes a tab/window.
- */
-async function advanceLoginFlow(flow) {
-  if (!flow || flow.cancelled || flow.transitioning || state.loginFlow !== flow) return
-  if (state.profileReleaseRunning) {
-    flow.cancelled = true
-    if (flow.closeWatch) clearInterval(flow.closeWatch)
-    flow.closeWatch = null
-    state.loginFlow = null
-    return
-  }
-  flow.transitioning = true
-  const currentContext = flow.context
-  try {
-    if (flow.closeWatch) {
-      clearInterval(flow.closeWatch)
-      flow.closeWatch = null
-    }
-    // Closing the current context releases Singleton* files before launching
-    // the next one. This also handles a browser window close, where the
-    // context has already begun shutting down by the time this runs.
-    await closeBrowserContext(currentContext).catch(() => {})
-    state.loginContexts.delete(currentContext)
-    if (flow.cancelled || state.loginFlow !== flow || state.profileReleaseRunning) {
-      flow.cancelled = true
-      if (state.loginFlow === flow) state.loginFlow = null
-      return
-    }
-
-    // Closing the login window flushes cookies to the persistent profile.
-    // Verify the site that was just handled before advancing; if login was
-    // incomplete, reopen the same site instead of silently moving on.
-    let completed = true
-    if (flow.currentKey) {
-      try {
-        const sites = await inspectLoginStatus()
-        completed = Boolean(sites[flow.currentKey])
-      } catch (_) {
-        completed = false
-      }
-    }
-    const nextKey = completed ? flow.pending.shift() : flow.currentKey
-    if (!nextKey) {
-      state.loginFlow = null
-      return
-    }
-
-    const nextContext = trackContext(await launchBrowser({ headless: false }))
-    flow.context = nextContext
-    flow.currentKey = nextKey
-    state.loginContexts.add(nextContext)
-    const page = nextContext.pages()[0] || await nextContext.newPage()
-    flow.page = page
-    page.once('close', () => { advanceLoginFlow(flow).catch(() => {}) })
-    nextContext.once('close', () => {
-      state.loginContexts.delete(nextContext)
-      advanceLoginFlow(flow).catch(() => {})
-    })
-    // page/context close events are normally sufficient. Keep a lightweight
-    // watchdog as a compatibility fallback for Chrome builds that close the
-    // native window without forwarding the page close event promptly.
-    flow.closeWatch = setInterval(() => {
-      if (state.loginFlow !== flow || flow.cancelled) {
-        clearInterval(flow.closeWatch)
-        flow.closeWatch = null
-        return
-      }
-      if (page.isClosed() || nextContext.pages().every((item) => item.isClosed())) {
-        clearInterval(flow.closeWatch)
-        flow.closeWatch = null
-        advanceLoginFlow(flow).catch(() => {})
-      }
-    }, 500)
-    await page.goto(loginTargets[nextKey].url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {})
-  } catch (error) {
-    if (flow.closeWatch) clearInterval(flow.closeWatch)
-    flow.closeWatch = null
-    await closeBrowserContext(flow.context).catch(() => {})
-    state.loginContexts.delete(flow.context)
-    state.loginFlow = null
-    if (!flow.cancelled) flow.error = error
-  } finally {
-    flow.transitioning = false
-  }
-}
-
-const loginTargets = {
-  datanexus: {
-    label: 'DataNexus',
-    url: 'https://datanexus.qq.com/web/workbench/file/import?from=dmp_MD5_IFA',
-    matches: (url) => url.hostname === 'datanexus.qq.com' && !/login|sso/i.test(`${url.pathname}${url.search}`),
-  },
-  ruyi: {
-    label: '如翼',
-    url: 'https://ruyi.qq.com/audience',
-    matches: (url) => url.hostname === 'ruyi.qq.com' && !/login|sso|\/auth/i.test(`${url.pathname}${url.search}`),
-  },
-}
-
-async function inspectLoginStatus() {
-  // Always use the shared persistent profile so the probe sees exactly the
-  // cookies/session that workflow scripts use.  A short retry handles the
-  // small window in which Chrome is still releasing Singleton* files after a
-  // previous context was closed.
-  let context
-  let lastError
-  for (let attempt = 0; attempt < 3 && !context; attempt += 1) {
-    try {
-      context = trackContext(await launchBrowser({ headless: true }))
-    } catch (error) {
-      lastError = error
-      if (!/ProcessSingleton|profile directory|already in use|Target page, context or browser has been closed/i.test(error.message || '')) throw error
-      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)))
-    }
-  }
-  if (!context) throw lastError || new Error('无法启动登录状态检查浏览器')
-  const sites = {}
-  try {
-    for (const [key, target] of Object.entries(loginTargets)) {
-      // Use a fresh page per platform.  Reusing one page can preserve an
-      // intermediate SSO redirect and make the second site look logged out.
-      const page = context.pages()[0] && key === 'datanexus'
-        ? context.pages()[0]
-        : await context.newPage()
-      try {
-        const response = await page.goto(target.url, { waitUntil: 'domcontentloaded', timeout: 30000 })
-        await page.waitForTimeout(1500)
-        const currentUrl = new URL(page.url())
-        const bodyText = await page.locator('body').innerText().catch(() => '')
-        const hasLoginPrompt = /(请先登录|请登录|立即登录|扫码登录|账号登录|统一登录)/i.test(bodyText)
-        // URL checks alone are insufficient: some SSO shells keep the
-        // original path while rendering a login prompt.  Conversely, a 401
-        // response must never be reported as authenticated.
-        sites[key] = Boolean(response && response.status() < 400 && target.matches(currentUrl) && !hasLoginPrompt)
-      } catch (_) {
-        sites[key] = false
-      }
-      if (key !== 'datanexus') await page.close().catch(() => {})
-    }
-    return sites
-  } finally {
-    await closeBrowserContext(context)
-  }
-}
-
-async function inspectPlatformFiles(type, names) {
+async function inspectPlatformFiles(type, names, storageState) {
   const url = type === 'pn'
     ? (process.env.RUYI_URL_PN_UPLOAD || 'https://ruyi.qq.com/audience/dnUpload?idType=MD5_MOBILE_PHONE')
     : type === 'idfa'
     ? 'https://ruyi.qq.com/audience/dnUpload?idType=MD5_IFA'
     : 'https://ruyi.qq.com/audience/dnUpload?idType=MD5_OAID'
-  const context = trackContext(await launchPlatformBrowser())
+  const context = trackContext(await launchPlatformBrowser(storageState))
   try {
     const page = context.pages()[0] || await context.newPage()
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 })
@@ -247,8 +48,8 @@ async function inspectPlatformFiles(type, names) {
   }
 }
 
-async function inspectAnalyseAudience(names) {
-  const context = trackContext(await launchPlatformBrowser())
+async function inspectAnalyseAudience(names, storageState) {
+  const context = trackContext(await launchPlatformBrowser(storageState))
   try {
     const page = context.pages()[0] || await context.newPage()
     await page.goto('https://ruyi.qq.com/audience', { waitUntil: 'domcontentloaded', timeout: 60000 })
@@ -269,7 +70,7 @@ async function inspectAnalyseAudience(names) {
       let matchedOnPage = 0
       for (const item of items) {
         const name = String(item.name || '').replace(/\s+/g, ' ').trim()
-        const matched = [...targets].find((target) => name === target || name.includes(target))
+        const matched = [...targets].find((target) => name === target)
         if (matched) {
           matchedOnPage += 1
           if (item.status === 'PROCESSING' || item.frontStatus === 'PROCESSING') foundUnavailable.add(matched)
@@ -284,8 +85,8 @@ async function inspectAnalyseAudience(names) {
   }
 }
 
-async function inspectInsightResults(names) {
-  const context = trackContext(await launchPlatformBrowser())
+async function inspectInsightResults(names, storageState) {
+  const context = trackContext(await launchPlatformBrowser(storageState))
   try {
     const page = context.pages()[0] || await context.newPage()
     await page.goto('https://ruyi.qq.com/audience-profile/result/', { waitUntil: 'domcontentloaded', timeout: 60000 })
@@ -345,4 +146,4 @@ async function inspectInsightResults(names) {
   }
 }
 
-module.exports = { loginTargets, inspectLoginStatus, advanceLoginFlow, advanceExternalLoginFlow, inspectPlatformFiles, inspectAnalyseAudience, inspectInsightResults, trackContext, openExternalUrl }
+module.exports = { inspectPlatformFiles, inspectAnalyseAudience, inspectInsightResults, trackContext, launchPlatformBrowser }

@@ -36,54 +36,110 @@ function decodeUploadedFileName(value) {
   return name.normalize('NFC')
 }
 
-function readTaskCount(fileName) {
-  const filePath = path.join(uploadRoot, fileName)
-  if (!fs.existsSync(filePath)) return 0
+function statEntry(filePath) {
+  try { return fs.lstatSync(filePath) } catch (error) {
+    if (error.code === 'ENOENT') return null
+    if (error.code) throw new Error('无法读取工作区，请联系管理员')
+    throw error
+  }
+}
+
+function checkDirectory(folder) {
+  const entry = statEntry(folder)
+  if (entry && (!entry.isDirectory() || entry.isSymbolicLink())) throw new Error('工作区目录不安全，请联系管理员')
+}
+
+function resolveWorkspace(user, root = uploadRoot) {
+  const base = path.resolve(root)
+  checkDirectory(base)
+  if (!user) return base
+  if (typeof user.username !== 'string' || !/^[a-z0-9_]{3,32}$/.test(user.username)) throw new Error('用户工作区无效')
+  const users = path.join(base, 'users')
+  const workspace = path.join(users, user.username)
+  checkDirectory(users)
+  checkDirectory(workspace)
+  return workspace
+}
+
+function ensureWorkspace(workspace) {
+  try {
+    checkDirectory(workspace)
+    fs.mkdirSync(workspace, { recursive: true })
+    for (const folder of ['raw', 'idfa', 'oaid', 'pn', 'result']) {
+      const target = path.join(workspace, folder)
+      checkDirectory(target)
+      fs.mkdirSync(target, { recursive: true })
+    }
+  } catch (error) {
+    if (error.code) throw new Error('无法创建工作区目录，请联系管理员')
+    throw error
+  }
+  return workspace
+}
+
+function isTaskFile(workspace, fileName) {
+  const entry = statEntry(path.join(workspace, fileName))
+  return entry?.isFile() && !entry.isSymbolicLink()
+}
+
+function readTaskCount(fileName, workspace = uploadRoot) {
+  const filePath = path.join(workspace, fileName)
+  if (!isTaskFile(workspace, fileName)) return 0
   try {
     const value = JSON.parse(fs.readFileSync(filePath, 'utf8') || '[]')
     return Array.isArray(value) ? value.filter((item) => typeof item === 'string').length : 0
   } catch (_) { return 0 }
 }
 
-function readTaskItems(fileNames) {
-  const existing = fileNames.find((fileName) => fs.existsSync(path.join(uploadRoot, fileName)))
+function readTaskItems(fileNames, workspace = uploadRoot) {
+  const existing = fileNames.find((fileName) => isTaskFile(workspace, fileName))
   if (!existing) return []
   try {
-    const value = JSON.parse(fs.readFileSync(path.join(uploadRoot, existing), 'utf8') || '[]')
+    const value = JSON.parse(fs.readFileSync(path.join(workspace, existing), 'utf8') || '[]')
     return Array.isArray(value) ? value.filter((item) => typeof item === 'string') : []
   } catch (_) { return [] }
 }
 
-function readFirstTaskCount(fileNames) {
-  const existing = fileNames.find((fileName) => fs.existsSync(path.join(uploadRoot, fileName)))
-  return existing ? readTaskCount(existing) : 0
+function readFirstTaskCount(fileNames, workspace = uploadRoot) {
+  const existing = fileNames.find((fileName) => isTaskFile(workspace, fileName))
+  return existing ? readTaskCount(existing, workspace) : 0
 }
 
-function getWorkspaceStatus() {
+function countPendingFiles(folder, type, recursive) {
+  const entry = statEntry(folder)
+  if (!entry?.isDirectory() || entry.isSymbolicLink()) return 0
+  let count = 0
+  let names
+  try { names = fs.readdirSync(folder) } catch (error) {
+    if (error.code) throw new Error('无法读取工作区，请联系管理员')
+    throw error
+  }
+  for (const name of names) {
+    if (name.startsWith('.') || name === 'done') continue
+    const file = path.join(folder, name)
+    const info = statEntry(file)
+    if (!info || info.isSymbolicLink()) continue
+    if (recursive && info.isDirectory()) count += countPendingFiles(file, type, true)
+    else if (info.isFile() && (type !== 'raw' || /(?:idfa|oaid|pn)/i.test(name))) count += 1
+  }
+  return count
+}
+
+function getWorkspaceStatus(workspace = uploadRoot) {
   // Uploads move from raw/ into idfa/, oaid/ or pn/ before the browser step. Count
   // both locations so the queue reflects files that are still uploadable;
   // files under */done are already complete and must not be included.
   const pendingUploadCount = ['raw', 'idfa', 'oaid', 'pn'].reduce((count, folderName) => {
-    const folder = path.join(uploadRoot, folderName)
-    if (!fs.existsSync(folder)) return count
-    return count + fs.readdirSync(folder)
-      .filter((name) => !name.startsWith('.') && name !== 'done')
-      .filter((name) => {
-        const file = path.join(folder, name)
-        if (!fs.statSync(file).isFile()) return false
-        if (folderName === 'raw') return /(?:idfa|oaid|pn)/i.test(name)
-        return new RegExp(folderName, 'i').test(name)
-      })
-      .length
+    return count + countPendingFiles(path.join(workspace, folderName), folderName, folderName === 'raw')
   }, 0)
-  const createNames = readTaskItems(['createGroupToDoList.json', 'creategrouptodolist.json'])
-  const createCount = readFirstTaskCount(['createGroupToDoList.json', 'creategrouptodolist.json'])
-  const analyseCount = readTaskCount('analyseToDoList.json')
-  const doneCount = readTaskCount('done.json')
+  const createNames = readTaskItems(['createGroupToDoList.json', 'creategrouptodolist.json'], workspace)
+  const createCount = readFirstTaskCount(['createGroupToDoList.json', 'creategrouptodolist.json'], workspace)
+  const analyseCount = readTaskCount('analyseToDoList.json', workspace)
+  const doneCount = readTaskCount('done.json', workspace)
   const workspaceStatus = createCount > 0 ? '等待创建人群包' : analyseCount > 0 ? '等待洞悉人群包' : doneCount > 0 ? '等待下载' : '等待操作'
   return { workspaceStatus, rawCount: pendingUploadCount, createCount, createNames, analyseCount, doneCount }
 }
 
 function withoutExtension(name) { return path.basename(name).replace(/\.[^.]+$/, '') }
 
-module.exports = { decodeUploadedFileName, readTaskCount, readTaskItems, readFirstTaskCount, getWorkspaceStatus, withoutExtension }
+module.exports = { decodeUploadedFileName, resolveWorkspace, ensureWorkspace, readTaskCount, readTaskItems, readFirstTaskCount, getWorkspaceStatus, withoutExtension }

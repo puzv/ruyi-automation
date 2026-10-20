@@ -8,6 +8,7 @@ const { readJsonArray, writeJsonArray } = require("./lib/files");
 const { launchBrowser, closeBrowserContext } = require("./lib/browser");
 const { checkPreflight } = require("./lib/preflight");
 const { navigateWithLogin } = require("./lib/login");
+const { requireMapping, updateStage } = require("./lib/file-manifest");
 
 function withoutExtension(fileName) {
   return path.basename(fileName).replace(/\.(?:txt|csv)$/i, "");
@@ -27,6 +28,7 @@ function resolveTask(uploadRoot) {
     typeof name === "string" && !done.has(withoutExtension(name))
   ));
   if (!fileName) throw new Error("分析任务清单中没有待处理文件。");
+  requireMapping(uploadRoot, fileName);
   return { fileName: path.basename(fileName), donePath, listPath };
 }
 
@@ -112,7 +114,7 @@ async function selectAudience(page, fileName) {
     (await selectedControl.locator(".selection-single-text").innerText().catch(() => "")) ||
     (await selectedControl.innerText().catch(() => "")),
   );
-  if (!candidates.has(selectedText) && !selectedText.includes(stem) && !selectedText.includes(requested)) {
+  if (!candidates.has(selectedText)) {
     throw new Error(`人群包“${requested}”未成功选中，已停止提交以避免创建空洞悉任务`);
   }
   console.log(`已选中人群包：${requested}${requested === stem ? "" : `（页面名称：${stem}）`}`);
@@ -234,7 +236,7 @@ async function submitInsight(page) {
 
 async function main() {
   checkPreflight({ taskFiles: ["analyseToDoList.json", "done.json"] });
-  const { fileName, donePath, listPath } = resolveTaskFromUpload();
+  const { uploadRoot, fileName, donePath, listPath } = resolveTaskFromUpload();
   const context = await launchBrowser();
   try {
     let page = context.pages()[0] || await context.newPage();
@@ -254,6 +256,7 @@ async function main() {
     await selectInsightFilters(page);
     await submitInsight(page);
     recordDone(donePath, listPath, fileName);
+    updateStage(uploadRoot, fileName, "analysed");
   } catch (error) {
     if (error.code === "AUDIENCE_TOO_SMALL") {
       removeFromAnalyseList(listPath, fileName);

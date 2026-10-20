@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@novnc/novnc": "^1.7.0",
     "@vitejs/plugin-vue": "^5.2.1",
     "@vue/compiler-core": "^3.5.13",
     "lucide-vue-next": "^0.468.0",

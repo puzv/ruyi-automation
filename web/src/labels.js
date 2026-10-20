@@ -3,6 +3,8 @@ export const actionLabels = {
   'admin.user_create': '创建用户', 'admin.user_disable': '停用用户', 'admin.user_enable': '启用用户',
   'admin.password_reset': '重置密码', 'admin.logs_view': '查看操作记录', 'file.import': '导入文件',
   'job.start': '启动任务', 'job.finish': '任务结束', 'platform.login_open': '打开平台登录',
+  'platform.state_expired': '平台登录已过期',
+  'platform.login_start': '开始平台登录', 'platform.login': '平台登录', 'platform.logout': '清除平台登录',
   'profile.release': '释放 Profile', 'runtime.mode_change': '切换运行模式',
 }
 export const taskLabels = { upload: '上传文件', create: '创建人群', analyse: '人群洞悉', download: '下载结果' }

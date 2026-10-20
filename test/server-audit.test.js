@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -7,6 +8,8 @@ const { sql } = require('kysely');
 const { createDb, readDbConfig } = require('../db');
 const users = require('../server/repos/users');
 const { hashPassword } = require('../server/auth/password');
+const { loadKeys } = require('../server/platform-state/crypto');
+const { storeCapturedState } = require('../server/platform-state');
 const { sanitizeDetail, writeLog, auditFromRequest } = require('../server/audit');
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruyi-audit-'));
 process.env.RUYI_UPLOAD_DIR = tempDir;
@@ -42,14 +45,15 @@ async function main() {
   const db = createDb(config);
   let app;
   const clean = async () => {
-    for (const table of ['ruyi_user_sessions', 'ruyi_operation_logs', 'ruyi_users']) await db.deleteFrom(table).execute();
+    for (const table of ['ruyi_user_sessions', 'ruyi_platform_states', 'ruyi_operation_logs', 'ruyi_users']) await db.deleteFrom(table).execute();
   };
   try {
     await clean();
     const passwordHash = await hashPassword(password);
     const adminId = await users.createUser(db, { username: 'audit_admin', displayName: '管理员', passwordHash, role: 'admin', mustChangePassword: false });
     const userId = await users.createUser(db, { username: 'audit_user', displayName: '用户', passwordHash, mustChangePassword: false });
-    app = buildApp({ db, logger: false, webDist: path.join(tempDir, 'dist') });
+    const stateKeys = loadKeys({ RUYI_STATE_KEY: crypto.randomBytes(32).toString('base64') });
+    app = buildApp({ db, stateKeys, logger: false, webDist: path.join(tempDir, 'dist') });
     const request = (method, url, cookie, payload) => app.inject({ method, url, headers: { ...(cookie ? { cookie } : {}), 'user-agent': 'audit-test' }, ...(payload === undefined ? {} : { payload }) });
     const login = (username, suppliedPassword = password) => request('POST', '/api/auth/login', null, { username, password: suppliedPassword });
     const logs = (action) => db.selectFrom('ruyi_operation_logs').selectAll().where('action', '=', action).orderBy('id').execute();
@@ -80,17 +84,17 @@ async function main() {
       assert.equal((await request('POST', '/api/auth/change-password', userCookie, { currentPassword, newPassword: nextPassword })).statusCode, expected);
       assert.equal((await latest('auth.password_change')).result, expected === 200 ? 'success' : 'failure');
     }
-    const created = await admin('POST', '/api/admin/users', { username: 'audit_created', displayName: '新增用户', password, role: 'user' });
+    const created = await admin('POST', '/api/admin/users', { username: 'audit_create', displayName: '新增用户', password, role: 'user' });
     assert.equal(created.statusCode, 200);
     const createdId = created.json().user.id;
     for (const [route, action] of [['disable', 'user_disable'], ['enable', 'user_enable'], ['reset-password', 'password_reset']]) {
       assert.equal((await admin('POST', `/api/admin/users/${createdId}/${route}`, route === 'reset-password' ? { password: nextPassword } : undefined)).statusCode, 200);
-      assert.equal((await latest(`admin.${action}`)).target_id, 'audit_created');
+      assert.equal((await latest(`admin.${action}`)).target_id, 'audit_create');
       assert.equal((await latest(`admin.${action}`)).result, 'success');
     }
-    assert.equal((await latest('admin.user_create')).target_id, 'audit_created');
+    assert.equal((await latest('admin.user_create')).target_id, 'audit_create');
     assert.deepEqual(parseDetail(await latest('admin.user_create')), { role: 'user' });
-    assert.equal((await admin('POST', '/api/admin/users', { username: 'audit_created', displayName: '重复', password, role: 'user' })).statusCode, 409);
+    assert.equal((await admin('POST', '/api/admin/users', { username: 'audit_create', displayName: '重复', password, role: 'user' })).statusCode, 409);
     assert.equal((await latest('admin.user_create')).result, 'failure');
 
     const boundary = 'audit-boundary';
@@ -98,13 +102,14 @@ async function main() {
     const imported = await app.inject({ method: 'POST', url: '/api/import-folder', headers: { cookie: userCookie, 'content-type': `multipart/form-data; boundary=${boundary}` }, payload });
     assert.equal(imported.statusCode, 200);
     assert.deepEqual(parseDetail(await latest('file.import')), { count: 1, skipped: 0, files: ['sample_oaid.txt'] });
-    state.profileProbeRunning = true;
-    assert.equal((await request('POST', '/api/run/upload', userCookie)).statusCode, 409);
+    const missingState = await request('POST', '/api/run/upload', userCookie);
+    assert.equal(missingState.statusCode, 409);
+    assert.equal(missingState.json().code, 'PLATFORM_LOGIN_REQUIRED');
     assert.equal((await latest('job.start')).result, 'failure');
-    state.profileProbeRunning = false;
+    await storeCapturedState(db, userId, { cookies: [], origins: [] }, stateKeys);
     assert.equal((await request('POST', '/api/run/unknown', userCookie)).statusCode, 404);
     const started = await request('POST', '/api/run/upload', userCookie);
-    assert.equal(started.statusCode, 200);
+    assert.equal(started.statusCode, 200, '已有有效登录态时可以启动认证任务');
     const start = await latest('job.start');
     assert.equal(start.result, 'success'); assert.equal(start.target_id, started.json().id);
     assert.match(start.request_id, /^[a-f0-9-]{36}$/);
@@ -122,12 +127,11 @@ async function main() {
     assert.ok(parseDetail(finish).durationMs >= 0);
     assert.equal((await request('POST', '/api/runtime-mode', userCookie, { headless: true })).statusCode, 200);
     assert.deepEqual(parseDetail(await latest('runtime.mode_change')), { headless: true });
-    state.profileReleaseRunning = true;
-    assert.equal((await request('POST', '/api/login-open', userCookie)).statusCode, 409);
-    assert.equal((await latest('platform.login_open')).result, 'failure');
-    assert.equal((await request('POST', '/api/profile-release', userCookie)).statusCode, 409);
-    assert.equal((await latest('profile.release')).result, 'failure');
-    state.profileReleaseRunning = false;
+    for (const url of ['/api/login-open', '/api/profile-release']) {
+      assert.equal((await request('POST', url, userCookie)).statusCode, 404);
+    }
+    assert.equal(await latest('platform.login_open'), undefined);
+    assert.equal(await latest('profile.release'), undefined);
 
     const mine = (await request('GET', '/api/logs/mine?pageSize=100', userCookie)).json();
     assert.equal(mine.ok, true); assert.ok(mine.total > 0);
@@ -172,7 +176,7 @@ async function main() {
     assert.equal(typeof adminId, 'number');
     console.log('操作记录写入、脱敏、任务关联和查询权限测试通过。');
   } finally {
-    state.profileProbeRunning = false; state.profileReleaseRunning = false; state.jobs.clear();
+    state.jobs.clear();
     try { if (app) await app.close(); } finally { try { await clean(); } finally { await db.destroy(); } }
     childProcess.spawn = originalSpawn;
   }

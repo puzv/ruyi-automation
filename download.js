@@ -2,19 +2,21 @@ const fs = require("fs");
 const path = require("path");
 require("./lib/playwright-env");
 const { chromium } = require("playwright");
-const { profileDir, chromePath, urls, resultDirCandidates, uploadRootCandidates } = require("./config");
+const { urls } = require("./config");
 const resultUrl = urls.result;
 const { requireUploadRoot } = require("./lib/paths");
-const { readJsonArray, writeJsonArray, ensureDir } = require("./lib/files");
+const { readJsonArray, writeJsonArray } = require("./lib/files");
 const { launchBrowser, closeBrowserContext } = require("./lib/browser");
 const { checkPreflight } = require("./lib/preflight");
+const { requireMapping, saveDownloadedFile } = require("./lib/file-manifest");
 
 function resolveDoneTask() {
   const uploadRoot = requireUploadRoot();
   const donePath = path.join(uploadRoot, "done.json");
   const fileName = readJsonArray(donePath, "完成清单").find((name) => typeof name === "string");
   if (!fileName) throw new Error(`完成清单中没有待下载文件：${donePath}`);
-  return { donePath, fileName: path.basename(fileName) };
+  requireMapping(uploadRoot, fileName);
+  return { donePath, uploadRoot, fileName: path.basename(fileName) };
 }
 
 function removeDoneFile(donePath, fileName) {
@@ -22,13 +24,6 @@ function removeDoneFile(donePath, fileName) {
     .filter((name) => typeof name !== "string" || path.basename(name) !== fileName);
   writeJsonArray(donePath, remaining);
   console.log(`已从完成清单移除：${fileName}`);
-}
-
-function getResultDir() {
-  const existing = resultDirCandidates.find((dir) => fs.existsSync(path.dirname(dir)));
-  const resultDir = existing || resultDirCandidates[resultDirCandidates.length - 1];
-  ensureDir(resultDir);
-  return resultDir;
 }
 
 function normalizeTaskName(value) {
@@ -213,7 +208,7 @@ async function ensureTaskReady(page, fileName, selectedTitle) {
   console.log(`分析任务状态：${result.status}${result.matchedCount > 1 ? `（同名 ${result.matchedCount} 条，采用最新记录）` : ""}`);
 }
 
-async function clickDownload(page, expectedTitles = []) {
+async function clickDownload(page, expectedTitles = [], task = {}) {
   const deadline = Date.now() + 15000;
   let target = { ok: false, reason: "not-checked" };
   while (Date.now() < deadline) {
@@ -279,8 +274,6 @@ async function clickDownload(page, expectedTitles = []) {
         if (size < 1024) {
           const bytes = fs.readFileSync(filePath);
           const text = bytes.toString("utf8");
-          console.log(`下载内容（文本）：${JSON.stringify(text)}`);
-          console.log(`下载内容（十六进制）：${bytes.toString("hex")}`);
           let payload;
           try {
             payload = JSON.parse(text);
@@ -291,15 +284,9 @@ async function clickDownload(page, expectedTitles = []) {
             throw new Error(`下载未成功：服务端返回失败（code=${payload.code ?? "未知"}，message=${payload.message || "未知错误"}），结果尚未生成或当前任务不可下载。`);
           }
         }
-        const downloadDir = getResultDir();
-        let targetPath = path.join(downloadDir, file.suggestedFilename());
-        if (fs.existsSync(targetPath)) {
-          const ext = path.extname(targetPath);
-          const base = targetPath.slice(0, -ext.length);
-          let index = 1;
-          do targetPath = `${base} (${index++})${ext}`; while (fs.existsSync(targetPath));
-        }
-        await file.saveAs(targetPath);
+        const uploadRoot = task.uploadRoot || requireUploadRoot();
+        const platformName = task.fileName || expectedTitles[0];
+        const targetPath = saveDownloadedFile(uploadRoot, platformName, file.suggestedFilename(), filePath);
         console.log(`已保存下载文件：${targetPath}`);
         return true;
       }
@@ -316,7 +303,7 @@ async function clickDownload(page, expectedTitles = []) {
 
 async function main() {
   checkPreflight({ taskFiles: ["done.json"] });
-  const { fileName, donePath } = resolveDoneTask();
+  const { fileName, donePath, uploadRoot } = resolveDoneTask();
 
   let context;
   try {
@@ -338,7 +325,7 @@ async function main() {
     const selectedTitle = await selectTask(page, fileName);
     const expectedTitles = getExpectedTitles(fileName, selectedTitle);
     await ensureTaskReady(page, fileName, selectedTitle);
-    if (!await clickDownload(page, expectedTitles)) throw new Error("下载未成功，保留完成清单中的文件名以便重试");
+    if (!await clickDownload(page, expectedTitles, { uploadRoot, fileName })) throw new Error("下载未成功，保留完成清单中的文件名以便重试");
     removeDoneFile(donePath, fileName);
   } finally {
     await closeBrowserContext(context);

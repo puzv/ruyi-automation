@@ -53,7 +53,7 @@ onMounted(() => load().catch((failure) => { error.value = failure.message }))
     <section class="content-card">
       <h2>新建用户</h2>
       <form class="filter-form user-create-form" @submit.prevent="createUser">
-        <label>用户名<input v-model="form.username" autocomplete="off" required :disabled="busy" /></label>
+        <label>用户名<input v-model="form.username" autocomplete="off" maxlength="12" required :disabled="busy" /><small>3–12 位小写字母、数字或下划线</small></label>
         <label>显示名<input v-model="form.displayName" maxlength="64" required :disabled="busy" /></label>
         <label>初始密码<input v-model="form.password" type="password" autocomplete="new-password" minlength="8" required :disabled="busy" /></label>
         <label>角色<select v-model="form.role" :disabled="busy"><option value="user">普通用户</option><option value="admin">管理员</option></select></label>

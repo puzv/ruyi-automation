@@ -41,10 +41,7 @@ async function auditResponse(request, reply, payload) {
       entry.action = 'job.start'; entry.targetType = 'job'; entry.targetId = response.id;
       entry.detail = { task: request.params.task, ...(!success ? { reason: response.message } : {}) };
       break;
-    case '/api/login-open':
-      entry.action = 'platform.login_open'; entry.detail = { opened: response.opened || [] }; break;
-    case '/api/profile-release':
-      entry.action = 'profile.release'; entry.detail = { terminatedJobs: response.terminatedJobs?.length || 0 }; break;
+    case '/api/platform-state/clear': entry.action = 'platform.logout'; break;
     case '/api/runtime-mode':
       if (!success) return payload;
       entry.action = 'runtime.mode_change'; entry.detail = { headless: response.headless }; break;

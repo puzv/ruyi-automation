@@ -8,6 +8,9 @@ const { registerAuthRoutes } = require("./routes/auth");
 const { auditResponse } = require("./audit-actions");
 const { registerLogsRoutes } = require("./routes/logs");
 const { registerAdminUsersRoutes } = require("./routes/admin-users");
+const { registerPlatformStateRoutes } = require("./routes/platform-state");
+const { registerPlatformLoginRoutes } = require("./routes/platform-login");
+const { readDisplayConfig } = require("./platform-login/display");
 const fastifyStatic = require("@fastify/static");
 const { registerRoutes } = require("./routes");
 
@@ -29,14 +32,17 @@ function defaultLogger() {
 }
 
 function buildApp(options = {}) {
+  const displayConfig = readDisplayConfig();
   const auth = options.auth ?? true;
   if (auth && !options.db) throw new Error("启用鉴权必须提供数据库连接");
+  if (auth && !options.stateKeys) throw new Error("启用鉴权必须提供登录态加密密钥");
   const app = Fastify({
     logger: options.logger ?? defaultLogger(),
     logController: new LogController({ disableRequestLogging: true }),
     bodyLimit: 2 * 1024 * 1024,
   });
   if (options.db) app.decorate("db", options.db);
+  app.decorate("stateKeys", options.stateKeys ?? null);
   app.decorate("auditEnabled", auth);
   app.addHook("onSend", auditResponse);
   app.register(fastifyCookie);
@@ -47,6 +53,8 @@ function buildApp(options = {}) {
     app.register(registerAuthRoutes);
     app.register(registerAdminUsersRoutes);
     app.register(registerLogsRoutes);
+    app.register(registerPlatformStateRoutes);
+    app.register(registerPlatformLoginRoutes, { ...options.platformLogin, displayConfig });
   }
   const webDist = path.resolve(options.webDist ?? path.join(__dirname, "..", "web", "dist"));
   const indexFile = path.join(webDist, "index.html");
@@ -68,7 +76,7 @@ function buildApp(options = {}) {
   });
 
   app.get("/api/health", async () => ({ ok: true }));
-  app.register(registerRoutes);
+  app.register(registerRoutes, { uploadRoot: options.uploadRoot, auth });
   // API 路径不能被同名静态文件或单页应用回退接管。
   app.all("/api/*", async (request, reply) => {
     return reply.code(404).send({ ok: false, message: "接口不存在" });

@@ -23,7 +23,7 @@ try {
   fs.writeFileSync(path.join(raw, 'oaid_sample.txt'), 'oaid-hash\n');
   fs.writeFileSync(path.join(raw, 'idfa_sample.txt'), 'idfa-hash\n');
   fs.writeFileSync(path.join(raw, 'empty_pn.csv'), '');
-  const batch = loadFunctions('uploadAll.js', '\nmain();', ['normalizeRawFileNames', 'getPendingFiles']);
+  const batch = require('../uploadAll');
   batch.normalizeRawFileNames(temporary);
   const result = spawnSync(process.execPath, [path.join(root, 'move.js')], {
     env: { ...process.env, RUYI_UPLOAD_DIR: temporary }, encoding: 'utf8',
@@ -34,7 +34,7 @@ try {
   assert.ok(fs.existsSync(path.join(temporary, 'oaid', 'oaidsample.txt')));
   assert.ok(fs.existsSync(path.join(temporary, 'idfa', 'idfasample.txt')));
   assert.equal(batch.getPendingFiles(temporary).length, 3);
-  const upload = loadFunctions('upload.js', '\n(async () => {', ['appendCreateGroupTodoList']);
+  const upload = require('../upload');
   upload.appendCreateGroupTodoList(temporary, [path.join(temporary, 'pn', 'pnsamplemd5.txt')]);
   const todoPath = path.join(temporary, 'createGroupToDoList.json');
   assert.deepEqual(JSON.parse(fs.readFileSync(todoPath, 'utf8')), ['pnsamplemd5']);

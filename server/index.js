@@ -4,12 +4,14 @@ const { loadDotEnv } = require("../db/env");
 loadDotEnv(path.join(__dirname, "..", ".env"));
 
 const { buildApp } = require("./app");
+const { loadKeys } = require("./platform-state/crypto");
 
 const { createDb } = require("../db");
 let app;
 try {
+  const stateKeys = loadKeys();
   const db = createDb();
-  app = buildApp({ db });
+  app = buildApp({ db, stateKeys });
   app.addHook("onClose", async () => { await db.destroy(); });
 } catch (error) {
   console.error(`服务启动失败：${error.message}`);
