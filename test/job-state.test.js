@@ -116,7 +116,7 @@ async function clearTestData(db) {
   const rows = await db.selectFrom('ruyi_users').select('id').where('username', 'in', usernames).execute();
   if (!rows.length) return;
   const ids = rows.map((row) => row.id);
-  for (const table of ['ruyi_user_sessions', 'ruyi_platform_states', 'ruyi_operation_logs']) {
+  for (const table of ['ruyi_jobs', 'ruyi_user_sessions', 'ruyi_platform_states', 'ruyi_operation_logs']) {
     await db.deleteFrom(table).where('user_id', 'in', ids).execute();
   }
   await db.deleteFrom('ruyi_users').where('id', 'in', ids).execute();
@@ -134,6 +134,12 @@ async function main() {
   process.env.RUYI_MAX_CONCURRENT_JOBS = '2';
   const childProcess = require('node:child_process');
   const originalSpawn = childProcess.spawn;
+  const originalKill = process.kill;
+  process.kill = (pid) => {
+    const entry = spawned.find((item) => item.child?.pid === -pid);
+    if (entry) setImmediate(() => entry.child.emit('close', null, 'SIGTERM'));
+    return true;
+  };
   const spawned = [];
   let throwOnSpawn = false;
   childProcess.spawn = (command, args, options) => {
@@ -162,6 +168,8 @@ async function main() {
   };
   platform.inspectInsightResults = platform.inspectAnalyseAudience;
   const { buildApp } = require('../server/app');
+  const { createWorker } = require('../server/worker');
+  const jobs = require('../server/repos/jobs');
   const runtime = require('../server/state');
   const { resolveWorkspace, ensureWorkspace } = require('../server/workspace');
   const db = createDb(config);
@@ -179,6 +187,8 @@ async function main() {
     }
     const [a, b, c] = identities;
     app = buildApp({ db, stateKeys: keys, uploadRoot: tempDir, logger: false, webDist: path.join(tempDir, 'missing') });
+    app.worker = createWorker({ db, keys, dataRoot: tempDir, maxConcurrent: 2, pollMs: 10 });
+    await app.worker.start();
     const request = (user, method, url) => app.inject({ method, url, headers: { cookie: user.cookie } });
     const run = (user = a) => request(user, 'POST', '/api/run/upload');
     const save = (user = a, value = storageState) => storeCapturedState(db, user.id, value, keys);
@@ -189,15 +199,16 @@ async function main() {
       const response = await run(user);
       assert.equal(response.statusCode, 200, response.body);
       const id = response.json().id;
-      return { id, ...spawned.at(-1), dir: path.dirname(spawned.at(-1).options.env.RUYI_STATE_FILE),
-        file: spawned.at(-1).options.env.RUYI_STATE_FILE };
+      assert.equal(response.json().status, 'queued');
+      const entry = await eventually(() => spawned.find((item) => item.options.env.RUYI_JOB_ID === id), '任务未被 Worker 认领');
+      return { id, ...entry, dir: path.dirname(entry.options.env.RUYI_STATE_FILE), file: entry.options.env.RUYI_STATE_FILE };
     };
     const finish = async (job, code = 0, user = a, error = false) => {
       if (error) job.child.emit('error', new Error('模拟子进程错误'));
       job.child.emit('close', code, null);
       const row = await eventually(async () => (await logs('job.finish', user)).find((entry) => entry.target_id === job.id), '任务结束记录未写入');
       assert.equal(fs.existsSync(job.dir), false, '结束记录写入前必须清理目录');
-      assert.equal(runtime.jobs.get(job.id).running, false);
+      assert.notEqual((await jobs.getJob(db, job.id)).status, 'running');
       return detailOf(row);
     };
     const assertLoginRequired = (response) => {
@@ -225,12 +236,13 @@ async function main() {
     assert.equal(fs.statSync(job.dir).mode & 0o777, 0o700);
     assert.deepEqual(JSON.parse(fs.readFileSync(job.file, 'utf8')), storageState);
     assert.equal(Object.entries(job.options.env).some(([key, value]) => key !== 'RUYI_STATE_FILE' && String(value).includes(marker)), false);
-    assert.equal(runtime.jobs.get(job.id).expectedVersion, version);
+    assert.equal(runtime.jobs.has(job.id), false, '认证任务不再进入内存 Map');
     const visibleJob = await request(a, 'GET', `/api/jobs/${job.id}`);
     assert.equal(visibleJob.statusCode, 200);
     for (const secret of ['RUYI_STATE_FILE', job.dir, marker]) assert.equal(visibleJob.body.includes(secret), false);
     assert.equal((await request(b, 'GET', `/api/jobs/${job.id}`)).statusCode, 404);
     assert.deepEqual(await finish(job), { task: 'upload', code: 0, signal: null,
+      status: 'succeeded', queuedMs: detailOf((await logs('job.finish')).at(-1)).queuedMs,
       durationMs: detailOf((await logs('job.finish')).at(-1)).durationMs, stateRefreshed: false, stateExpired: false });
     assert.equal((await read()).version, version);
 
@@ -266,7 +278,7 @@ async function main() {
     for (const error of [false, true]) {
       job = await start();
       await finish(job, error ? -2 : 2, a, error);
-      assert.equal(runtime.jobs.get(job.id).code, error ? 1 : 2);
+      assert.equal((await jobs.getJob(db, job.id)).exit_code, error ? 1 : 2);
       assert.equal((await logs('job.finish')).filter((row) => row.target_id === job.id).length, 1);
     }
     for (const missing of [false, true]) {
@@ -280,15 +292,16 @@ async function main() {
     }
     throwOnSpawn = true;
     const failed = await run();
-    assert.equal(failed.statusCode, 500);
+    assert.equal(failed.statusCode, 200);
+    await eventually(async () => (await jobs.getJob(db, failed.json().id)).status === 'failed', '启动失败没有持久化');
     assert.equal(fs.existsSync(path.dirname(spawned.at(-1).options.env.RUYI_STATE_FILE)), false);
-    assert.equal(runtime.jobStarts.size, 0);
     throwOnSpawn = false;
 
     await save(); await save(b); await save(c);
     const concurrent = await Promise.all([run(a), run(b)]);
     assert.deepEqual(concurrent.map((response) => response.statusCode), [200, 200]);
     // 异步加载登录态后启动的顺序可能与请求顺序不同，按任务 ID 关联进程。
+    await eventually(() => concurrent.every((response) => spawned.some((item) => item.options.env.RUYI_JOB_ID === response.json().id)), '并发任务尚未启动');
     const running = concurrent.map((response) => {
       const id = response.json().id;
       const entry = spawned.find((item) => item.options.env.RUYI_JOB_ID === id);
@@ -297,9 +310,11 @@ async function main() {
     });
     assert.notEqual(running[0].dir, running[1].dir);
     const ownBusy = await run(a);
-    assert.equal(ownBusy.statusCode, 409); assert.equal(ownBusy.json().message, '当前用户已有任务正在运行，请等待完成');
+    assert.equal(ownBusy.statusCode, 200); assert.equal(ownBusy.json().status, 'queued');
+    await jobs.requestCancel(db, { id: ownBusy.json().id, userId: a.id });
     const globalBusy = await run(c);
-    assert.equal(globalBusy.statusCode, 409); assert.equal(globalBusy.json().message, '服务器繁忙，当前已有 2 个任务在运行，请稍后再试');
+    assert.equal(globalBusy.statusCode, 200); assert.equal(globalBusy.json().status, 'queued');
+    await jobs.requestCancel(db, { id: globalBusy.json().id, userId: c.id });
     const importBusy = await request(a, 'POST', '/api/import-folder');
     assert.equal(importBusy.statusCode, 409); assert.match(importBusy.json().message, /当前用户有任务/);
 
@@ -328,25 +343,12 @@ async function main() {
     assert.equal(runtime.platformProbes.size, 0);
     await finish(running[0], 0, a); await finish(running[1], 0, b);
 
-    for (const invalid of ['0', '-1', '1.5', 'invalid', '']) {
-      process.env.RUYI_MAX_CONCURRENT_JOBS = invalid;
-      const one = await start(a), two = await start(b);
-      assert.equal((await run(c)).statusCode, 409, '非法并发上限应回退为 2');
-      await finish(one, 0, a); await finish(two, 0, b);
-    }
-    process.env.RUYI_MAX_CONCURRENT_JOBS = '1';
-    const race = await Promise.all([run(a), run(b)]);
-    assert.deepEqual(race.map((response) => response.statusCode).sort(), [200, 409], '异步加载登录态期间也应计入并发上限');
-    const winner = race[0].statusCode === 200 ? a : b;
-    const winnerResponse = race[winner === a ? 0 : 1];
-    const latestChild = spawned.at(-1);
-    await finish({ ...latestChild, id: winnerResponse.json().id,
-      dir: path.dirname(latestChild.options.env.RUYI_STATE_FILE) }, 0, winner);
     const sameUserRace = await Promise.all([run(a), run(a)]);
-    assert.deepEqual(sameUserRace.map((response) => response.statusCode).sort(), [200, 409]);
-    const sameUserWinner = sameUserRace.find((response) => response.statusCode === 200);
-    const last = spawned.at(-1);
-    await finish({ ...last, id: sameUserWinner.json().id, dir: path.dirname(last.options.env.RUYI_STATE_FILE) });
+    assert.deepEqual(sameUserRace.map((response) => response.statusCode), [200, 200], '同用户并发请求应该排队');
+    const raceIds = sameUserRace.map((response) => response.json().id);
+    await eventually(() => spawned.some((item) => raceIds.includes(item.options.env.RUYI_JOB_ID)), '排队任务未启动');
+    for (const id of raceIds) await jobs.requestCancel(db, { id, userId: a.id });
+    await eventually(async () => (await Promise.all(raceIds.map((id) => jobs.getJob(db, id)))).every((job) => job.status === 'cancelled'), '取消任务未结束');
 
     const allLogs = JSON.stringify(await db.selectFrom('ruyi_operation_logs').selectAll().where('user_id', 'in', identities.map((user) => user.id)).execute());
     assert.equal(allLogs.includes(marker), false); assert.equal(allLogs.includes('ruyi-state-'), false);
@@ -358,8 +360,8 @@ async function main() {
     try {
       if (app) await app.close();
     } finally {
-      runtime.jobs.clear(); runtime.jobStarts.clear(); runtime.platformProbes.clear();
-      childProcess.spawn = originalSpawn; browser.launchBrowser = originalLaunch;
+      runtime.jobs.clear(); runtime.platformProbes.clear();
+      childProcess.spawn = originalSpawn; process.kill = originalKill; browser.launchBrowser = originalLaunch;
       Object.assign(platform, originals);
       try { await clearTestData(db); } finally {
         await db.destroy();

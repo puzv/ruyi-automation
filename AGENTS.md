@@ -19,7 +19,7 @@
 - 使用 Kysely + mysql2，连接从 `db/index.js` 的 `createDb()` 获取，不使用 Prisma。
 - 所有表名以 `ruyi_` 开头；每张表显式 `DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`。
 - 不使用 MySQL 8 专有语法：`SKIP LOCKED`、`NOWAIT`、CTE（`WITH`）、窗口函数、`utf8mb4_0900_ai_ci`。
-- 认领任务用原子 `UPDATE ... WHERE status='queued' ORDER BY id LIMIT 1` + `claim_token`。
+- 认领任务：在 MySQL 命名锁 `GET_LOCK('ruyi_job_claim', …)` 内选出候选并原子 `UPDATE ... WHERE id=? AND status='queued'`，写入 `claim_token`；同一连接上释放锁（`RELEASE_LOCK`）。不得使用 `SKIP LOCKED`，也不能在 UPDATE 中子查询同一张表（MySQL 5.7 报错 1093）。
 - `ruyi_operation_logs` 只追加，代码中不得 UPDATE / DELETE 该表。
 
 ## 登录态

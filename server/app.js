@@ -42,6 +42,8 @@ function buildApp(options = {}) {
     bodyLimit: 2 * 1024 * 1024,
   });
   if (options.db) app.decorate("db", options.db);
+  app.decorate("worker", options.worker ?? null);
+  app.addHook("preClose", async () => { await app.worker?.stop(); });
   app.decorate("stateKeys", options.stateKeys ?? null);
   app.decorate("auditEnabled", auth);
   app.addHook("onSend", auditResponse);

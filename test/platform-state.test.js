@@ -84,41 +84,60 @@ function testCrypto() {
   assert.equal(estimateExpiry({}), null);
 }
 
-function testStartup() {
+async function testStartup() {
   // 在隔离上下文中验证入口，不读取 .env，也不启动服务或连接数据库。
   const source = fs.readFileSync(path.join(__dirname, "../server/index.js"), "utf8");
-  function run(env) {
-    const result = { errors: [], dbCreated: false };
+  async function run(env) {
+    const result = { errors: [], dbCreated: false, events: [], handlers: {} };
     const exited = new Error("模拟退出");
-    const app = { addHook() {}, listen() { return Promise.resolve(); } };
+    const app = { addHook() {}, listen() { result.events.push('listen'); return Promise.resolve(); },
+      async close() { result.events.push('app.close'); await Promise.resolve(); } };
     try {
       vm.runInNewContext(source, {
         __dirname: path.join(__dirname, "../server"),
         require(name) {
           if (name === "path") return path;
-          if (name === "../db/env") return { loadDotEnv() {} };
+          if (name === "../db/env") return { loadDotEnv() { result.dotEnvLoaded = true; } };
           if (name === "./platform-state/crypto") return { loadKeys: () => loadKeys(env) };
           if (name === "../db") return { createDb() { result.dbCreated = true; return {}; } };
-          if (name === "./app") return { buildApp(options) { result.options = options; return app; } };
+          if (name === "./app") return { buildApp(options) {
+            result.options = options; Object.assign(app, { db: options.db, stateKeys: options.stateKeys }); return app;
+          } };
+          if (name === "../config") return { uploadRoot: '/tmp/测试工作区' };
+          if (name === "./worker") return { createWorker(options) {
+            result.events.push('worker.create'); result.workerOptions = options;
+            return { async start() { result.events.push('worker.start'); }, async stop() {} };
+          } };
           throw new Error("入口出现未预期的依赖");
         },
-        process: { env: {}, once() {}, exit(code) { result.exitCode = code; throw exited; } },
+        process: { env, on(signal, handler) { result.handlers[signal] = handler; },
+          exit(code) { result.exitCode = code; if (code) throw exited; } },
         console: { error(message) { result.errors.push(message); } },
       });
     } catch (error) { if (error !== exited) throw error; }
+    await Promise.resolve(); await Promise.resolve();
     return result;
   }
   for (const env of [{}, { RUYI_STATE_KEY: "INVALID_PRIVATE_KEY!" }]) {
-    const failed = run(env);
+    const failed = await run(env);
     assert.equal(failed.exitCode, 1);
     assert.equal(failed.dbCreated, false);
     assert.match(failed.errors[0], /^服务启动失败：/);
     assert.equal(failed.errors[0].includes("INVALID_PRIVATE_KEY!"), false);
   }
-  const started = run(keyEnv);
+  const started = await run(keyEnv);
   assert.equal(started.dbCreated, true);
   assert.deepEqual(started.options.stateKeys, keys);
   assert.deepEqual(started.errors, []);
+  assert.deepEqual(started.events, ['listen', 'worker.create', 'worker.start']);
+  assert.equal(started.workerOptions.db, started.options.db);
+  assert.equal(typeof started.handlers.SIGTERM, 'function');
+  await Promise.all([started.handlers.SIGINT(), started.handlers.SIGINT(), started.handlers.SIGTERM()]);
+  assert.equal(started.events.filter((event) => event === 'app.close').length, 1, '重复信号只能关闭一次');
+  assert.equal(started.exitCode, 0);
+  const off = await run({ ...keyEnv, RUYI_WORKER: 'off', RUYI_DB_HOST: '127.0.0.1', RUYI_DB_USER: 'ruyi', RUYI_DB_NAME: 'ruyi_test' });
+  assert.deepEqual(off.events, ['listen']);
+  assert.equal(off.dotEnvLoaded, undefined, '完整环境变量配置不读取 .env');
 }
 
 async function clearTestData(db) {
@@ -138,7 +157,7 @@ async function main() {
     throw new Error("数据库测试只允许连接本机 Docker 的 ruyi_test 测试数据库。");
   }
   testCrypto();
-  testStartup();
+  await testStartup();
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ruyi-platform-state-test-"));
   const previousUploadDir = process.env.RUYI_UPLOAD_DIR;
   process.env.RUYI_UPLOAD_DIR = tempDir;

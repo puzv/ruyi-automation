@@ -98,3 +98,18 @@ button { cursor: pointer; }
 .platform-login-page .remote-desktop-status { color: #53635d; font-size: 12px; }
 .platform-login-error { margin-top: 18px; }
 @media (max-width: 620px) { .platform-state-summary { grid-template-columns: 1fr; gap: 16px; } }
+
+/* 任务队列复用操作记录的表格与按钮。 */
+.job-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0; color: #53635d; font-size: 12px; }
+.job-toolbar label { display: flex; align-items: center; gap: 8px; }
+.job-toolbar select { max-width: 100%; padding: 8px; border: 1px solid #dce4df; border-radius: 6px; background: #fff; color: #182522; font: inherit; }
+.job-log-link { display: inline-block; margin-top: 8px; color: #27624a; font-size: 12px; }
+.row-actions .job-log-link { margin: 0; text-decoration: none; white-space: nowrap; }
+.action-card:disabled { opacity: .55; cursor: wait; transform: none; }
+.job-status-queued { color: #92702b; background: #f7eed5; }
+.job-status-running { color: #416e98; background: #e2edf8; }
+.job-status-succeeded { color: #27624a; background: #dff3e8; }
+.job-status-failed { color: #a33f37; background: #fbece8; }
+.job-status-cancelled { color: #53635d; background: #edf1ef; }
+.job-status-interrupted { color: #735b9e; background: #eee7f7; }
+.data-table .nowrap { white-space: nowrap; }

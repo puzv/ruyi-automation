@@ -77,13 +77,13 @@ async function testWorkbench() {
   const calls = [];
   let status = 'none';
   let required = true;
-  const sandbox = { ...vue, ...Object.fromEntries(icons.map((name) => [name, {}])),
-    onMounted() {}, defineProps: () => ({ currentUser: { id: 7 }, page: '/' }), defineEmits() {}, defineExpose() {},
+  const sandbox = { ...vue, ...await import('../web/src/labels.js'), ...Object.fromEntries(icons.map((name) => [name, {}])),
+    onMounted() {}, onBeforeUnmount() {}, window: { clearTimeout() {} }, defineProps: () => ({ currentUser: { id: 7 }, page: '/' }), defineEmits() {}, defineExpose() {},
     async apiFetch(url) {
       calls.push(url);
       const data = url === '/api/platform-state' ? { ok: true, status }
-        : url.startsWith('/api/run/') ? required ? { ok: false, code: 'PLATFORM_LOGIN_REQUIRED', message: '服务端原始提示' } : { ok: true, id: 'job-1' }
-        : url.startsWith('/api/jobs/') ? { running: false, code: 2, output: '模拟任务结束' }
+        : url.startsWith('/api/run/') ? required ? { ok: false, code: 'PLATFORM_LOGIN_REQUIRED', message: '服务端原始提示' } : { ok: true, id: 'job-1', status: 'queued' }
+        : url.startsWith('/api/jobs/') ? { ok: true, job: { id: 'job-1', task: 'download', status: 'failed', output: '模拟任务结束' } }
         : { ok: true, workspaceStatus: '等待操作' };
       return { ok: true, async json() { return data; } };
     },
@@ -94,13 +94,13 @@ async function testWorkbench() {
     await view.refreshPlatformState();
     assert.equal(view.platformState.value.status, status);
   }
-  await view.runTask('下载洞悉结果');
+  await view.runTask('下载结果');
   assert.equal(view.platformLoginRequired.value, true);
   assert.equal(view.notice.value, '请先完成平台登录');
   assert.equal(view.running.value, '');
   required = false;
   const before = calls.filter((url) => url === '/api/platform-state').length;
-  await view.runTask('下载洞悉结果');
+  await view.runTask('下载结果');
   await flush();
   assert.equal(view.platformLoginRequired.value, false);
   assert.equal(view.running.value, '');
@@ -270,6 +270,7 @@ async function main() {
   assert.equal(failingPage.component.restoring.value, false);
   failingPage.unmount();
   await testWorkbench();
+  await require('./frontend-jobs.test')();
 }
 
 main().then(() => console.log('平台登录组件编译、轮询、会话恢复、错误处理及清理测试通过。')).catch((error) => {

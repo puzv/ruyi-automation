@@ -22,6 +22,7 @@ childProcess.spawn = () => {
   return child;
 };
 const { buildApp } = require('../server/app');
+const { createWorker } = require('../server/worker');
 const state = require('../server/state');
 const password = 'AuditPassword123';
 const nextPassword = 'AuditChanged123';
@@ -45,7 +46,16 @@ async function main() {
   const db = createDb(config);
   let app;
   const clean = async () => {
-    for (const table of ['ruyi_user_sessions', 'ruyi_platform_states', 'ruyi_operation_logs', 'ruyi_users']) await db.deleteFrom(table).execute();
+    const rows = await db.selectFrom('ruyi_users').select('id').where('username', 'in', ['audit_admin', 'audit_user', 'audit_create']).execute();
+    if (rows.length) {
+      const ids = rows.map((row) => row.id);
+      for (const table of ['ruyi_jobs', 'ruyi_user_sessions', 'ruyi_platform_states', 'ruyi_operation_logs']) {
+        await db.deleteFrom(table).where('user_id', 'in', ids).execute();
+      }
+      await db.deleteFrom('ruyi_users').where('id', 'in', ids).execute();
+    }
+    await db.deleteFrom('ruyi_operation_logs').where('username', 'in', ['audit_missing', 'audit_user', '']).execute();
+    await db.deleteFrom('ruyi_operation_logs').where('action', '=', 'test.truncate').execute();
   };
   try {
     await clean();
@@ -113,6 +123,12 @@ async function main() {
     const start = await latest('job.start');
     assert.equal(start.result, 'success'); assert.equal(start.target_id, started.json().id);
     assert.match(start.request_id, /^[a-f0-9-]{36}$/);
+    assert.equal(started.json().status, 'queued');
+    assert.deepEqual(parseDetail(start), { task: 'upload', queued: true });
+    app.worker = createWorker({ db, keys: stateKeys, dataRoot: tempDir, pollMs: 10 });
+    await app.worker.start();
+    for (let i = 0; i < 200 && !child; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(child);
     child.emit('close', 2, 'SIGTERM');
     // 回调异步入库，等待其完成而不依赖固定的数据库响应时间。
     let finish;

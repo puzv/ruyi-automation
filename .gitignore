@@ -38,3 +38,4 @@ state-test.json
 *.state.json
 *.state.json.*.tmp
 state-test.json.*.tmp
+.env.*.bak

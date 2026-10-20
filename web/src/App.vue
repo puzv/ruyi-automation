@@ -8,6 +8,8 @@ import ChangePasswordView from './views/ChangePasswordView.vue'
 import MyLogsView from './views/MyLogsView.vue'
 import AdminUsersView from './views/AdminUsersView.vue'
 import AdminLogsView from './views/AdminLogsView.vue'
+import MyJobsView from './views/MyJobsView.vue'
+import AdminJobsView from './views/AdminJobsView.vue'
 
 const currentUser = ref(null)
 const workbench = ref(null)
@@ -15,7 +17,7 @@ const loading = ref(true)
 const error = ref('')
 const page = ref('/')
 const loggingOut = ref(false)
-const routes = ['/', '/platform-login', '/logs', '/admin/users', '/admin/logs', '/password']
+const routes = ['/', '/platform-login', '/logs', '/jobs', '/admin/users', '/admin/logs', '/admin/jobs', '/password']
 
 function syncPage() {
   let next = location.hash.slice(1) || '/'
@@ -101,8 +103,10 @@ onBeforeUnmount(() => {
       <template v-if="page !== '/'" #default>
         <PlatformLoginView v-if="page === '/platform-login'" :current-user="currentUser" @state-changed="workbench?.refreshPlatformState()" />
         <MyLogsView v-else-if="page === '/logs'" />
+        <MyJobsView v-else-if="page === '/jobs'" />
         <AdminUsersView v-else-if="page === '/admin/users'" :current-user="currentUser" />
         <AdminLogsView v-else-if="page === '/admin/logs'" />
+        <AdminJobsView v-else-if="page === '/admin/jobs'" />
         <ChangePasswordView v-else-if="page === '/password'" @changed="passwordChanged" @logout="logout" />
       </template>
     </WorkbenchView>

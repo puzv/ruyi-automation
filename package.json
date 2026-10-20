@@ -22,12 +22,15 @@
     "user:create-admin": "node scripts/create-admin.js",
     "test:db": "RUYI_DB_HOST=127.0.0.1 RUYI_DB_PORT=3306 RUYI_DB_USER=ruyi RUYI_DB_PASSWORD=ruyi RUYI_DB_NAME=ruyi_test node test/db-repos.test.js",
     "test:auth": "RUYI_DB_HOST=127.0.0.1 RUYI_DB_PORT=3306 RUYI_DB_USER=ruyi RUYI_DB_PASSWORD=ruyi RUYI_DB_NAME=ruyi_test node test/server-auth.test.js",
-    "test:all": "npm test && npm run test:db && npm run test:auth && npm run test:audit && npm run test:platform-state && npm run test:job-state && npm run test:platform-login && npm run test:vnc-proxy",
+    "test:all": "npm test && npm run test:db && npm run test:auth && npm run test:audit && npm run test:platform-state && npm run test:job-state && npm run test:platform-login && npm run test:vnc-proxy && npm run test:jobs-repo && npm run test:worker",
+    "test:jobs-repo": "RUYI_DB_HOST=127.0.0.1 RUYI_DB_PORT=3306 RUYI_DB_USER=ruyi RUYI_DB_PASSWORD=ruyi RUYI_DB_NAME=ruyi_test node test/jobs-repo.test.js",
     "test:platform-login": "RUYI_DB_HOST=127.0.0.1 RUYI_DB_PORT=3306 RUYI_DB_USER=ruyi RUYI_DB_PASSWORD=ruyi RUYI_DB_NAME=ruyi_test node test/platform-login.test.js",
     "test:platform-state": "RUYI_DB_HOST=127.0.0.1 RUYI_DB_PORT=3306 RUYI_DB_USER=ruyi RUYI_DB_PASSWORD=ruyi RUYI_DB_NAME=ruyi_test node test/platform-state.test.js",
     "test:job-state": "RUYI_DB_HOST=127.0.0.1 RUYI_DB_PORT=3306 RUYI_DB_USER=ruyi RUYI_DB_PASSWORD=ruyi RUYI_DB_NAME=ruyi_test node test/job-state.test.js",
     "test:audit": "RUYI_DB_HOST=127.0.0.1 RUYI_DB_PORT=3306 RUYI_DB_USER=ruyi RUYI_DB_PASSWORD=ruyi RUYI_DB_NAME=ruyi_test node test/server-audit.test.js",
-    "test:vnc-proxy": "RUYI_DB_HOST=127.0.0.1 RUYI_DB_PORT=3306 RUYI_DB_USER=ruyi RUYI_DB_PASSWORD=ruyi RUYI_DB_NAME=ruyi_test node test/vnc-proxy.test.js"
+    "test:vnc-proxy": "RUYI_DB_HOST=127.0.0.1 RUYI_DB_PORT=3306 RUYI_DB_USER=ruyi RUYI_DB_PASSWORD=ruyi RUYI_DB_NAME=ruyi_test node test/vnc-proxy.test.js",
+    "worker": "node server/worker/main.js",
+    "test:worker": "RUYI_DB_HOST=127.0.0.1 RUYI_DB_PORT=3306 RUYI_DB_USER=ruyi RUYI_DB_PASSWORD=ruyi RUYI_DB_NAME=ruyi_test node test/worker.test.js"
   },
   "keywords": [],
   "author": "",

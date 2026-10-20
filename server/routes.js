@@ -10,12 +10,15 @@ const { inspectPlatformFiles, inspectAnalyseAudience, inspectInsightResults } = 
 const { startJob, jobBelongsToUser, cleanupJobStates } = require('./jobs')
 const { loadUserState, getStatusSummary } = require('./platform-state')
 const state = require('./state')
+const jobs = require('./repos/jobs')
+const { registerJobRoutes } = require('./routes/jobs')
 const { writeLog, auditFromRequest } = require('./audit')
 
 async function registerRoutes(api, options = {}) {
   const dataRoot = options.uploadRoot || uploadRoot
   const workspaceFor = (req) => resolveWorkspace(req.user, dataRoot)
-  const userHasRunningJob = (req) => state.jobStarts.has(req.user?.id) || [...state.jobs.values()].some((job) => job.running && jobBelongsToUser(job, req.user))
+  const legacyStarts = new Set()
+  const userHasRunningJob = (req) => options.auth ? jobs.hasRunningJob(api.db, req.user.id) : legacyStarts.has(req.user?.id) || [...state.jobs.values()].some((job) => job.running && jobBelongsToUser(job, req.user))
   const loginRequired = (res) => res.code(409).send({ ok: false, code: 'PLATFORM_LOGIN_REQUIRED', message: '请先完成平台登录' })
   const loadState = async (req) => {
     try { return await loadUserState(api.db, req.user.id, api.stateKeys) } catch (_) { return null }
@@ -89,7 +92,7 @@ async function registerRoutes(api, options = {}) {
   })
   api.post('/api/import-folder', async (req, res) => {
     req.auditImport = { count: 0, skipped: 0, files: [] }
-    if (req.user && userHasRunningJob(req)) return res.code(409).send({ ok: false, message: '当前用户有任务正在运行，请完成后再导入文件' })
+    if (req.user && await userHasRunningJob(req)) return res.code(409).send({ ok: false, message: '当前用户有任务正在运行，请完成后再导入文件' })
     let files
     try {
       files = []
@@ -103,7 +106,7 @@ async function registerRoutes(api, options = {}) {
     } catch (error) {
       return res.code(400).send({ ok: false, message: error.message })
     }
-    if (req.user && userHasRunningJob(req)) return res.code(409).send({ ok: false, message: '当前用户有任务正在运行，请完成后再导入文件' })
+    if (req.user && await userHasRunningJob(req)) return res.code(409).send({ ok: false, message: '当前用户有任务正在运行，请完成后再导入文件' })
     try {
       const workspace = ensureWorkspace(workspaceFor(req))
       const rawDir = path.join(workspace, 'raw')
@@ -137,14 +140,27 @@ async function registerRoutes(api, options = {}) {
     const scripts = { upload: 'uploadAll.js', create: 'createAllGroup.js', analyse: 'analyseAll.js', download: 'downloadAll.js' }
     const script = scripts[req.params.task]
     if (!script) return res.code(404).send({ ok: false, message: '未知操作' })
+    if (options.auth) {
+      if (!await loadState(req)) return loginRequired(res)
+      const id = randomUUID()
+      const origin = auditFromRequest(req, {})
+      const result = await jobs.enqueueJob(api.db, { id, userId: req.user.id, username: req.user.username,
+        task: req.params.task, headless: state.headlessMode, requestId: origin.requestId })
+      if (!result.ok) return res.code(result.reason === 'busy' ? 503 : 409).send({ ok: false,
+        message: result.reason === 'busy' ? '服务繁忙，请稍后重试' : '排队任务过多，请等待已有任务完成' })
+      const job = await jobs.getJob(api.db, id)
+      const position = await jobs.queuePosition(api.db, job) + 1
+      api.worker?.wake()
+      return res.send({ ok: true, id, status: 'queued', position })
+    }
     if (req.user) {
       if (userHasRunningJob(req)) return res.code(409).send({ ok: false, message: '当前用户已有任务正在运行，请等待完成' })
-      const runningCount = [...state.jobs.values()].filter((job) => job.running).length + state.jobStarts.size
+      const runningCount = [...state.jobs.values()].filter((job) => job.running).length + legacyStarts.size
       const configuredMax = Number(process.env.RUYI_MAX_CONCURRENT_JOBS)
       const maxJobs = Number.isSafeInteger(configuredMax) && configuredMax > 0 ? configuredMax : 2
       if (runningCount >= maxJobs) return res.code(409).send({ ok: false, message: `服务器繁忙，当前已有 ${runningCount} 个任务在运行，请稍后再试` })
       // 读取登录态之前预留名额，避免并行请求在异步查询期间绕过上限。
-      state.jobStarts.add(req.user.id)
+      legacyStarts.add(req.user.id)
     } else {
       if ([...state.jobs.values()].some((job) => job.running)) return res.code(409).send({ ok: false, message: '已有脚本正在运行，请等待完成' })
     }
@@ -169,14 +185,18 @@ async function registerRoutes(api, options = {}) {
       })
       return res.send({ ok: true, id })
     } finally {
-      if (req.user) state.jobStarts.delete(req.user.id)
+      if (req.user) legacyStarts.delete(req.user.id)
     }
   })
-  api.get('/api/jobs/:id', (req, res) => {
-    const job = state.jobs.get(req.params.id)
-    if (!job || !jobBelongsToUser(job, req.user)) return res.code(404).send({ ok: false, message: '任务不存在' })
-    res.send(job)
-  })
+  if (options.auth) {
+    await registerJobRoutes(api, { dataRoot })
+  } else {
+    api.get('/api/jobs/:id', (req, res) => {
+      const job = state.jobs.get(req.params.id)
+      if (!job || !jobBelongsToUser(job, req.user)) return res.code(404).send({ ok: false, message: '任务不存在' })
+      res.send(job)
+    })
+  }
 }
 
 module.exports = { registerRoutes }

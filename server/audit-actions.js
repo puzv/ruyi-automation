@@ -39,7 +39,11 @@ async function auditResponse(request, reply, payload) {
       break;
     case '/api/run/:task':
       entry.action = 'job.start'; entry.targetType = 'job'; entry.targetId = response.id;
-      entry.detail = { task: request.params.task, ...(!success ? { reason: response.message } : {}) };
+      entry.detail = { task: request.params.task, ...(response.status === 'queued' ? { queued: true } : {}), ...(!success ? { reason: response.message } : {}) };
+      break;
+    case '/api/jobs/:id/cancel':
+      entry.action = 'job.cancel'; entry.targetType = 'job'; entry.targetId = request.params.id;
+      entry.detail = success ? { result: response.result } : undefined;
       break;
     case '/api/platform-state/clear': entry.action = 'platform.logout'; break;
     case '/api/runtime-mode':

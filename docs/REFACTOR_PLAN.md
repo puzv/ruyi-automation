@@ -67,6 +67,16 @@
 - 任务入 `ruyi_jobs` 表，Worker 独立进程认领执行；人群文件流水线状态入表
 - **验收**：重启服务不丢任务记录；多人任务排队执行
 
+阶段 5 的具体决定（2026-10-20，负责人同意先做 5A）：
+- **5A 任务队列（本阶段）**：任务入 `ruyi_jobs` 表；脚本输出写入用户目录 `logs/<任务ID>.log`；满员时排队而不是拒绝；重启后排队任务继续执行，运行中的任务标记为“已中断”；可查看历史任务与完整日志；可取消排队中或运行中的任务
+- **5B 流水线入表（以后）**：JSON 清单与 `file-manifest.json` 暂不入表，等做“分析下载文件”功能时再做
+- Worker 默认**内嵌在 `npm start` 的进程里**（用户启动方式不变）；也可单独运行 `npm run worker`，API 设置 `RUYI_WORKER=off`，供阶段 6 拆分部署
+- 认领任务：在 MySQL 命名锁 `GET_LOCK('ruyi_job_claim')` 内“选出候选 + 原子 UPDATE（`WHERE status='queued'`）+ claim_token”，保证多个 Worker 下同一用户也只有一个运行中任务（MySQL 5.7 不支持 SKIP LOCKED，且 UPDATE 不能子查询同表）
+- 并发：每个 Worker 同时最多 `RUYI_MAX_CONCURRENT_JOBS`（默认 2）个；同一用户同时只运行 1 个，其余排队；每个用户排队+运行中最多 5 个
+- 任务进程用包装器启动：Worker 退出（包括异常退出）时任务进程组随之结束，避免孤儿脚本继续改写文件
+- `auth: false` 模式保留原内存实现，只供旧测试
+- 任务拆分：5.1 任务表与认领 → 5.2 Worker 与接口 → 5.3 前端任务页面
+
 ### 阶段 6：部署
 - 更新 Dockerfile 与 K8s 配置（API、Worker、登录桌面、Secret、Ingress）
 - **验收**：在开发网 K8s 上完成以上全部验收项
@@ -97,3 +107,10 @@
   - [x] 4.4 鉴权 WebSocket 转发 VNC（同源、会话归属、仅本机 VNC），noVNC 组件
   - [x] 4.5 平台登录页面；删除 `/api/login-open`、`/api/profile-release` 及 Profile 登录流程
   - 未实测：真实扫码登录后跑完整业务流程（负责人账号暂不可用）；Xvfb/K8s 下的远程桌面（阶段 6 部署时验证）
+- [ ] 阶段 5A（代码完成，Claude 审查与端到端检查通过，等待负责人验收）
+  - [x] 5.1 `ruyi_jobs` 表（迁移 005，已在本地 `ruyi_dev`/`ruyi_test` 执行）与认领逻辑（命名锁 + 条件 UPDATE）
+  - [x] 5.2 Worker（内嵌于 `npm start`，或 `npm run worker` 独立运行）、进程包装器（Worker 崩溃时任务进程随之结束）、任务接口
+  - [x] 5.3 工作台排队状态与取消、“我的任务”“全部任务”页面
+  - 端到端：上限 2 时第三个任务排队并自动执行；`kill -9` Worker 后任务进程全部结束、重启后标记为已中断且排队任务继续执行
+  - 上线前需在 `bsg_dw` 执行迁移 005
+  - 已知限制：管理员不能查看他人任务的日志内容（只能看状态）
