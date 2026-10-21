@@ -6,47 +6,57 @@
 
 ```text
 项目目录/
-├── config.js                  # 统一运行配置
-├── config.example.js          # 配置项示例
-├── lib/                       # 公共路径、文件和浏览器工具
-├── upload/                    # 数据根目录；直接运行脚本仍使用以下旧单机目录
+├── apps/
+│   ├── web/                   # Vue 3 + Vite 前端，ESM
+│   ├── server/src/            # Fastify API，入口 main.js；modules/ 按业务分组
+│   └── worker/src/            # 任务认领与执行，入口 main.js
+├── packages/
+│   ├── automation/            # move/upload/create/analyse/download 脚本与 lib/
+│   └── shared/                # config.js、根路径、浏览器环境及共享 runtime/
+├── db/                        # Kysely 连接及集中管理的 migrations/
+├── scripts/                   # 运维工具及任务进程包装器
+├── test/                      # Node assert 回归测试
+├── docs/                      # 重构计划和验收记录
+├── upload/                    # 原地保留的数据根目录
 │   ├── raw/                   # 待整理原始文件
 │   ├── idfa/                  # IDFA 待上传文件
 │   ├── oaid/                  # OAID 待上传文件
 │   ├── pn/                    # PN 手机号 MD5 待上传文件
 │   ├── result/                # 下载结果
-│   └── users/<用户名>/        # 登录用户的独立工作区，包含同样的五个目录及 JSON 清单
-├── ruyi-profile/              # 本机登录状态和浏览器配置
-├── move.js
-├── uploadAll.js
-├── createAllGroup.js
-├── analyseAll.js
-└── downloadAll.js
+│   └── users/<用户名>/        # 登录用户的独立工作区及任务清单
+├── ruyi-profile/              # 旧单机浏览器配置，原地保留
+└── .playwright-browsers/       # 本机浏览器缓存，原地保留
 ```
 
 ## 使用顺序
 
 ```bash
-node move.js
-node uploadAll.js
-node createAllGroup.js
-node analyseAll.js
-node downloadAll.js
+npm run move
+npm run upload
+npm run create
+npm run analyse
+npm run download
 ```
 
-首次运行需要在浏览器中依次完成数据平台（DataNexus）和如翼平台登录。网页控制台的“需要登录”按钮会一次打开一个站点；完成登录并关闭当前登录窗口后，服务会复查登录状态，再打开下一个站点。不要将包含登录状态的 `ruyi-profile` 发送给其他人；分发时可创建一个空目录，让对方首次运行时自行登录。
+网页使用前先在平台登录页面完成 DataNexus 和如翼登录；登录态由服务端加密保存，任务按用户加载。直接运行脚本仍可使用 `RUYI_STATE_FILE` 或原有单机 Profile；不要分发登录态文件或包含登录状态的 `ruyi-profile`。
 
 ## 网页工作台
 
-首次使用时，在项目根目录和 `web/` 目录各执行一次 `npm install` 安装依赖。
+首次使用时，只在项目根目录执行一次 `npm ci`，npm workspaces 会安装五个包的依赖。依赖版本统一记录在根 `package-lock.json`，不再分别安装前端依赖。
 
 生产方式：在项目根目录执行 `npm run build:web`，完成后执行 `npm start`，打开 http://127.0.0.1:5173。可通过 `RUYI_SERVER_PORT` 和 `RUYI_SERVER_HOST` 环境变量修改端口和监听地址。
 
-开发方式：在项目根目录打开两个终端，分别运行 `npm run dev:server` 和 `npm run dev:web`，打开 http://localhost:5173（Vite 开发服务器只监听 localhost，用 127.0.0.1 可能打不开）。修改前端代码会热更新；修改 `server/` 后需重启 `dev:server`。
+开发方式：在项目根目录打开两个终端，分别运行 `npm run dev:server` 和 `npm run dev:web`，打开 http://localhost:5173（Vite 开发服务器只监听 localhost，用 127.0.0.1 可能打不开）。修改前端代码会热更新；修改 `apps/server/src/` 后需重启 `dev:server`。
+
+`npm start` 默认同时启动内嵌 Worker；拆分运行时，API 使用 `RUYI_WORKER=off npm start`，另一个进程运行 `npm run worker`。两个入口都先从仓库根加载环境配置，工作区启动目录不会改变默认数据或浏览器缓存位置。
+
+登录页支持直接注册，无需邀请码或管理员审核。用户名为 3–12 位小写字母、数字或下划线，显示名为 1–64 位字符，密码至少 8 位且最多 72 字节。注册后账号立即启用、仅有普通用户权限，无需首次改密；注册成功后返回登录页，保留用户名并清空密码，再使用已有登录入口登录。注册本身不创建会话，重复用户名会提示“用户名已存在”。
+
+注册前端组件测试已接入 `npm test`，不启动浏览器。`npm run test:registration` 仅连接显式配置的本机 `127.0.0.1:3306`、`ruyi_test` 数据库（账号和密码均为 `ruyi`），覆盖注册接口和审计，并清理本次测试数据；已接入 `npm run test:all` 串行执行。
 
 ## 用户工作区与平台名称
 
-网页登录后，文件、状态和任务记录按当前账号隔离，工作区由服务端计算为 `<数据根目录>/users/<用户名>/`。导入保留原始文件名，保存在 `raw/<导入标识>/<文件序号>/<原始文件名>`；多次导入同名文件也不会覆盖。上传任务会在整理文件或启动浏览器前检查全部待上传文件，遇到重复原始文件名时停止，请先处理重复文件后重试。同一用户运行任务期间不能继续导入，当前浏览器 Profile 仍全局只允许一个任务运行。
+网页登录后，文件、状态和任务记录按当前账号隔离，工作区由服务端计算为 `<数据根目录>/users/<用户名>/`。导入保留原始文件名，保存在 `raw/<导入标识>/<文件序号>/<原始文件名>`；多次导入同名文件也不会覆盖。上传任务会在整理文件或启动浏览器前检查全部待上传文件，遇到重复原始文件名时停止，请先处理重复文件后重试。同一用户运行任务期间不能继续导入；每个用户同时执行一个任务，Worker 默认并发上限为 2。
 
 新任务的平台名称格式为 `<用户名>_<idfa|oaid|pn>_<8位任务短串>_<序号>`，最多 30 个 Unicode 字符，名称空间不足时会提前报错。工作区的 `file-manifest.json` 保存平台名称、原始文件名和完整上传任务 ID；重试沿用已有映射。下载结果恢复原始主文件名并保留实际下载格式的扩展名，已有同名结果会报错，待下载清单保留。不要手工删除映射清单。未设置 `RUYI_USER`、`RUYI_JOB_ID` 直接运行脚本时，继续使用旧单机命名方式。
 
@@ -75,19 +85,19 @@ RUYI_PROFILE_DIR="/path/to/profile" \\
 RUYI_CHROME_PATH="/path/to/chrome" \\
 RUYI_HEADLESS=1 \\
 RUYI_AUDIENCE_LIMIT=480 \\
-node createAllGroup.js
+npm run create
 ```
 
 所有浏览器流程默认以后台（无头）模式运行。需要查看浏览器窗口或完成登录、验证码、二次认证时，请设置 `RUYI_HEADLESS=0`（也接受 `false`/`no`/`off`）切换为可视调试模式；完成登录后可取消该变量恢复后台运行。
 
-业务 URL 也可通过 `RUYI_URL_*` 环境变量覆盖，具体名称见 `config.js`。
+业务 URL 也可通过 `RUYI_URL_*` 环境变量覆盖，具体名称见 `packages/shared/config.js`。
 
 ## 分发
 
-分发项目源码、`package.json`、`package-lock.json`、`lib/` 和必要的 `upload` 子目录即可。接收方在项目目录执行：
+分发 `apps/`、`packages/`、`db/`、`scripts/`、根 `package.json` 与 `package-lock.json`，并创建空的数据目录。部署配置仍在独立部署仓库；不要包含 `.env`、登录态或用户数据。接收方在项目根目录执行：
 
 ```bash
-npm install
+npm ci
 ```
 
 安装依赖后，需要自行准备与当前 Mac 架构匹配的 Playwright Chromium，并解压到项目内的
@@ -146,3 +156,5 @@ npm run browser:install -- --arch arm64
 ```
 
 任务清单 JSON 应放在当前工作区根目录中，且内容必须是字符串数组；旧单机模式的工作区仍为 `upload/`。
+
+目录结构回归 `node test/workspace-layout.test.js` 已接入 `npm test`，覆盖非根目录的路径定位、Worker 脚本与包装器、默认静态目录和包依赖方向。

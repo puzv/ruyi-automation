@@ -4,14 +4,14 @@ const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const crypto = require('node:crypto');
-const { loadKeys, encryptState } = require('../server/platform-state/crypto');
+const { loadKeys, encryptState } = require('@ruyi/shared/runtime/platform-state/crypto');
 const keys = loadKeys({ RUYI_STATE_KEY: crypto.randomBytes(32).toString('base64') });
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruyi-isolation-test-'));
 const previousUploadDir = process.env.RUYI_UPLOAD_DIR;
 process.env.RUYI_UPLOAD_DIR = path.join(tempDir, 'legacy');
 const childProcess = require('node:child_process');
-const browser = require('../lib/browser');
+const browser = require('@ruyi/automation/lib/browser');
 const originals = { spawn: childProcess.spawn, kill: process.kill, launchBrowser: browser.launchBrowser,
   closeBrowserContext: browser.closeBrowserContext };
 const children = [];
@@ -27,18 +27,18 @@ childProcess.spawn = (command, args, options) => {
 process.kill = (pid, signal) => { signals.push({ pid, signal }); return true; };
 browser.launchBrowser = () => { throw new Error('隔离测试不得启动真实浏览器'); };
 browser.closeBrowserContext = async (context) => context.close();
-const platform = require('../server/platform');
+const platform = require('@ruyi/server/src/modules/files/platform');
 const platformOriginals = { inspectPlatformFiles: platform.inspectPlatformFiles,
   inspectAnalyseAudience: platform.inspectAnalyseAudience, inspectInsightResults: platform.inspectInsightResults };
 const inspections = [];
 platform.inspectPlatformFiles = async (type, names) => { inspections.push({ type, names }); return { missingCount: names.length }; };
 platform.inspectAnalyseAudience = async (names) => { inspections.push({ type: 'analyse', names }); return names.length; };
 platform.inspectInsightResults = async (names) => { inspections.push({ type: 'result', names }); return names.length; };
-const { buildApp } = require('../server/app');
-const { startJob } = require('../server/jobs');
-const state = require('../server/state');
-const { resolveWorkspace, getWorkspaceStatus } = require('../server/workspace');
-const { createPlatformName } = require('../lib/file-manifest');
+const { buildApp } = require('@ruyi/server/src/app');
+const { startJob } = require('@ruyi/server/src/modules/jobs/memory');
+const state = require('@ruyi/server/src/state');
+const { resolveWorkspace, getWorkspaceStatus } = require('@ruyi/shared/runtime/workspace');
+const { createPlatformName } = require('@ruyi/automation/lib/file-manifest');
 
 const users = { alice: { id: 1, username: 'alice', role: 'user' },
   bob: { id: 2, username: 'bob', role: 'user' }, admin: { id: 3, username: 'admin', role: 'admin' } };
@@ -166,7 +166,7 @@ async function main() {
     assert.equal(spawned.options.env.RUYI_UPLOAD_DIR, alice);
     assert.equal(spawned.options.env.RUYI_USER, 'alice');
     assert.equal(spawned.options.env.RUYI_JOB_ID, id);
-    assert.equal(spawned.options.cwd, require('../config').projectRoot);
+    assert.equal(spawned.options.cwd, require('@ruyi/shared/config').projectRoot);
     for (const folder of ['raw', 'idfa', 'oaid', 'pn', 'result']) assert.ok(fs.statSync(path.join(alice, folder)).isDirectory());
     spawned.child.stdout.emit('data', Buffer.from('任务输出'));
     const ownJob = (await request('alice', 'GET', `/api/jobs/${id}`)).json();

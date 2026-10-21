@@ -9,16 +9,16 @@ const previousUploadDir = process.env.RUYI_UPLOAD_DIR;
 process.env.RUYI_UPLOAD_DIR = tempDir;
 
 // 互斥分支一旦失效就立即失败，避免测试意外启动浏览器或真实任务。
-const browser = require('../lib/browser');
+const browser = require('@ruyi/automation/lib/browser');
 const childProcess = require('node:child_process');
 const originals = { ...browser, spawn: childProcess.spawn };
 const unexpectedOperation = () => { throw new Error('测试不得启动浏览器、运行脚本'); };
 browser.launchBrowser = unexpectedOperation;
 browser.closeBrowserContext = async (context) => context.close();
 childProcess.spawn = unexpectedOperation;
-const { buildApp } = require('../server/app');
-const state = require('../server/state');
-const { trackContext } = require('../server/platform');
+const { buildApp } = require('@ruyi/server/src/app');
+const state = require('@ruyi/server/src/state');
+const { trackContext } = require('@ruyi/server/src/modules/files/platform');
 
 function multipart(files) {
   const boundary = 'ruyi-test-boundary';

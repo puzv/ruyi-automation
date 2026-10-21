@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const { spawnSync } = require('node:child_process');
 
-const root = path.resolve(__dirname, '..');
+const { automationRoot: root } = require('@ruyi/shared/paths');
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'ruyi-pn-'));
 function loadFunctions(script, marker, names) {
   const filename = path.join(root, script);
@@ -23,7 +23,7 @@ try {
   fs.writeFileSync(path.join(raw, 'oaid_sample.txt'), 'oaid-hash\n');
   fs.writeFileSync(path.join(raw, 'idfa_sample.txt'), 'idfa-hash\n');
   fs.writeFileSync(path.join(raw, 'empty_pn.csv'), '');
-  const batch = require('../uploadAll');
+  const batch = require('@ruyi/automation/uploadAll');
   batch.normalizeRawFileNames(temporary);
   const result = spawnSync(process.execPath, [path.join(root, 'move.js')], {
     env: { ...process.env, RUYI_UPLOAD_DIR: temporary }, encoding: 'utf8',
@@ -34,7 +34,7 @@ try {
   assert.ok(fs.existsSync(path.join(temporary, 'oaid', 'oaidsample.txt')));
   assert.ok(fs.existsSync(path.join(temporary, 'idfa', 'idfasample.txt')));
   assert.equal(batch.getPendingFiles(temporary).length, 3);
-  const upload = require('../upload');
+  const upload = require('@ruyi/automation/upload');
   upload.appendCreateGroupTodoList(temporary, [path.join(temporary, 'pn', 'pnsamplemd5.txt')]);
   const todoPath = path.join(temporary, 'createGroupToDoList.json');
   assert.deepEqual(JSON.parse(fs.readFileSync(todoPath, 'utf8')), ['pnsamplemd5']);
@@ -47,7 +47,7 @@ try {
   create.removeFromCreateTodoList(next.todoPath, next.fileName);
   assert.deepEqual(JSON.parse(fs.readFileSync(todoPath, 'utf8')), []);
   assert.deepEqual(JSON.parse(fs.readFileSync(next.analysePath, 'utf8')), ['pnsamplemd5']);
-  const { urls } = require('../config');
+  const { urls } = require('@ruyi/shared/config');
   assert.equal(new URL(urls.pnImport).searchParams.get('from'), 'dmp_MD5_MOBILE_PHONE');
   assert.equal(new URL(urls.pnUpload).searchParams.get('idType'), 'MD5_MOBILE_PHONE');
   console.log('PN flow checks passed');

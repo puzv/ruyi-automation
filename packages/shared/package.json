@@ -1,0 +1,11 @@
+{
+  "name": "@ruyi/shared",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "main": "paths.js",
+  "dependencies": {
+    "kysely": "^0.29.7",
+    "playwright": "1.62.1"
+  }
+}

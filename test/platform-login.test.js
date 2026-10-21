@@ -4,14 +4,14 @@ const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { createDb, readDbConfig } = require('../db');
-const users = require('../server/repos/users');
-const authSessions = require('../server/repos/sessions');
-const states = require('../server/repos/platform-states');
-const { hashToken } = require('../server/auth/session');
-const { loadKeys } = require('../server/platform-state/crypto');
-const { loadUserState, storeCapturedState } = require('../server/platform-state');
-const { loginTargets } = require('../lib/storage-state');
-const sessions = require('../server/platform-login/sessions');
+const users = require('@ruyi/shared/runtime/repos/users');
+const authSessions = require('@ruyi/server/src/modules/auth/repository');
+const states = require('@ruyi/shared/runtime/repos/platform-states');
+const { hashToken } = require('@ruyi/server/src/modules/auth/session');
+const { loadKeys } = require('@ruyi/shared/runtime/platform-state/crypto');
+const { loadUserState, storeCapturedState } = require('@ruyi/shared/runtime/platform-state/index');
+const { loginTargets } = require('@ruyi/automation/lib/storage-state');
+const sessions = require('@ruyi/server/src/modules/platform-login/sessions');
 
 const marker = 'PLATFORM_LOGIN_FAKE_COOKIE_43';
 const captured = { cookies: [{ name: 'dn_token', value: marker, domain: '.datanexus.qq.com', path: '/',
@@ -100,11 +100,11 @@ async function main() {
   process.env.RUYI_MAX_LOGIN_SESSIONS = '2';
   process.env.RUYI_LOGIN_SESSION_TIMEOUT_MS = '900000';
   const { chromium } = require('playwright');
-  const legacyBrowser = require('../lib/browser');
+  const legacyBrowser = require('@ruyi/automation/lib/browser');
   const originalLaunch = chromium.launch;
   const originalLegacyLaunch = legacyBrowser.launchBrowser;
   chromium.launch = legacyBrowser.launchBrowser = () => { assert.fail('登录会话测试不得启动真实浏览器'); };
-  const { buildApp } = require('../server/app');
+  const { buildApp } = require('@ruyi/server/src/app');
   const db = createDb(config);
   const queue = [];
   const launched = [];

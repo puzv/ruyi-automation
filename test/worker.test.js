@@ -8,18 +8,18 @@ const { once } = require('node:events')
 const vm = require('node:vm')
 const { sql } = require('kysely')
 const { createDb, readDbConfig } = require('../db')
-const users = require('../server/repos/users')
-const sessions = require('../server/repos/sessions')
-const states = require('../server/repos/platform-states')
-const jobs = require('../server/repos/jobs')
-const { hashToken } = require('../server/auth/session')
-const { loadKeys } = require('../server/platform-state/crypto')
-const { storeCapturedState } = require('../server/platform-state')
-const { buildApp } = require('../server/app')
-const { createWorker } = require('../server/worker')
-const { runJob } = require('../server/worker/runner')
-const { signalJobProcess } = require('../server/worker/execution')
-const { resolveWorkspace } = require('../server/workspace')
+const users = require('@ruyi/shared/runtime/repos/users')
+const sessions = require('@ruyi/server/src/modules/auth/repository')
+const states = require('@ruyi/shared/runtime/repos/platform-states')
+const jobs = require('@ruyi/shared/runtime/repos/jobs')
+const { hashToken } = require('@ruyi/server/src/modules/auth/session')
+const { loadKeys } = require('@ruyi/shared/runtime/platform-state/crypto')
+const { storeCapturedState } = require('@ruyi/shared/runtime/platform-state/index')
+const { buildApp } = require('@ruyi/server/src/app')
+const { createWorker } = require('@ruyi/worker/src/index')
+const { runJob } = require('@ruyi/worker/src/runner')
+const { signalJobProcess } = require('@ruyi/worker/src/execution')
+const { resolveWorkspace } = require('@ruyi/shared/runtime/workspace')
 
 const names = ['worker_a', 'worker_b', 'worker_c', 'worker_admin']
 const marker = 'FAKE_WORKER_COOKIE_DO_NOT_LEAK'
@@ -291,13 +291,13 @@ async function main() {
     const enteredPromise = new Promise((resolve) => { entered = resolve })
     const intervals = new Map()
     const moduleStub = { exports: {} }
-    vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../server/worker/index.js'), 'utf8'), {
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../apps/worker/src/index.js'), 'utf8'), {
       module: moduleStub, process, AbortController, setTimeout, clearTimeout,
       setInterval(fn, ms) { intervals.set(ms, fn); return ms },
       clearInterval(ms) { intervals.delete(ms) },
       require(name) {
-        if (name === '../repos/jobs') return jobs
-        if (name === '../audit') return require('../server/audit')
+        if (name === '@ruyi/shared/runtime/repos/jobs') return jobs
+        if (name === '@ruyi/shared/runtime/audit') return require('@ruyi/shared/runtime/audit')
         if (name === './runner') return { runJob }
         return require(name)
       },

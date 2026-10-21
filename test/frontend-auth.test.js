@@ -3,8 +3,8 @@ const { pathToFileURL } = require('url');
 const path = require('path');
 
 async function main() {
-  const { apiFetch, requestJson, AUTH_EVENTS } = await import(pathToFileURL(path.join(__dirname, '../web/src/api.js')));
-  const { formatTime, logDescription, logTarget, actionLabels } = await import(pathToFileURL(path.join(__dirname, '../web/src/labels.js')));
+  const { apiFetch, requestJson, AUTH_EVENTS } = await import(pathToFileURL(path.join(__dirname, '../apps/web/src/api.js')));
+  const { formatTime, logDescription, logTarget, actionLabels } = await import(pathToFileURL(path.join(__dirname, '../apps/web/src/labels.js')));
   const originalFetch = global.fetch;
   const originalWindow = global.window;
   const events = [];

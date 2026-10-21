@@ -1,8 +1,8 @@
 const path = require('node:path')
 const { spawn } = require('node:child_process')
 const { createDb, readDbConfig } = require('../../db')
-const { loadKeys } = require('../../server/platform-state/crypto')
-const { createWorker } = require('../../server/worker')
+const { loadKeys } = require('@ruyi/shared/runtime/platform-state/crypto')
+const { createWorker } = require('@ruyi/worker/src/index')
 
 const config = readDbConfig()
 if (config.host !== '127.0.0.1' || config.port !== 3306 || config.database !== 'ruyi_test'

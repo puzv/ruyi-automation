@@ -4,9 +4,12 @@ const crypto = require("crypto");
 const { spawnSync } = require("child_process");
 const { Readable } = require("stream");
 const { pipeline } = require("stream/promises");
-const { VALID_ARCHES, detectMacArchitecture } = require("../lib/macos-arch");
+const { VALID_ARCHES, detectMacArchitecture } = require("@ruyi/shared/macos-arch");
 
-const projectRoot = path.resolve(__dirname, "..");
+const { projectRoot } = require("@ruyi/shared/paths");
+const { createRequire } = require("node:module");
+const playwrightRequire = createRequire(require.resolve("@ruyi/shared/package.json"));
+const browserRequire = createRequire(playwrightRequire.resolve("playwright/package.json"));
 const defaultReleaseUrl = "https://gitee.com/puzvv/ruyi-automation/releases/download/playwright-browsers-v1.1.6";
 
 function parseArgs(argv) {
@@ -128,8 +131,8 @@ async function main() {
     throw new Error(`无法识别 Mac 芯片架构（Node=${process.arch}，来源=${detected.source}）。可使用 --arch arm64 或 --arch x64 指定`);
   }
   console.log(`浏览器架构：${architecture}（${options.archSource || detected.source}，Node=${process.arch}）`);
-  const expectedVersion = require(path.join(projectRoot, "node_modules/playwright/package.json")).version;
-  const expectedRevision = require(path.join(projectRoot, "node_modules/playwright-core/browsers.json"))
+  const expectedVersion = playwrightRequire("playwright/package.json").version;
+  const expectedRevision = browserRequire("playwright-core/browsers.json")
     .browsers.find((browser) => browser.name === "chromium")?.revision;
   if (!expectedRevision) throw new Error("无法从当前 Playwright 依赖读取 Chromium revision");
   const browserRoot = options.browserDir;

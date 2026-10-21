@@ -5,8 +5,8 @@
 // 设置 RUYI_HEADLESS=0 可看到浏览器窗口，检查结束后窗口保留 30 秒供人工确认。
 const fs = require("fs");
 const path = require("path");
-const { browserHeadless } = require("../config");
-const { loginTargets, probeSite, launchStateBrowser } = require("../lib/storage-state");
+const { browserHeadless } = require("@ruyi/shared/config");
+const { loginTargets, probeSite, launchStateBrowser } = require("@ruyi/automation/lib/storage-state");
 
 const statePath = path.resolve(process.argv[2] || "state-test.json");
 

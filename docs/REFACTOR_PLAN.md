@@ -8,9 +8,11 @@
 ## 已确定的技术决定
 | 项目 | 决定 |
 |---|---|
-| 后端 | Node.js + Fastify，CommonJS JavaScript，放在 `server/` |
-| 前端 | Vue 3 + Vite，保留在 `web/`，只负责页面；开发时代理 `/api` 到后端 |
-| 自动化脚本 | 保留现有 Playwright 脚本，后续阶段再改为可调用的函数 |
+| 后端 | Node.js + Fastify，CommonJS JavaScript，放在 `apps/server/src/`，按业务模块组织 |
+| 前端 | Vue 3 + Vite，放在 `apps/web/`，只负责页面；开发时代理 `/api` 到后端 |
+| 自动化脚本 | `packages/automation/`，保留现有 Playwright 脚本与函数接口 |
+| 共享边界 | `packages/shared/` 的配置、根路径和共享 runtime；Worker 在 `apps/worker/src/`，不反向依赖 API |
+| 依赖与部署 | npm workspaces、根统一 lockfile；`db/` 与迁移保留根目录，部署仍在独立仓库 |
 | 数据库 | 远程共享库 `bsg_dw`（MySQL 5.7），Kysely，表名前缀 `ruyi_` |
 | 平台登录态 | storageState，AES-256-GCM 加密存入 `ruyi_platform_states` |
 | 本系统登录 | 账号密码（bcrypt）+ 服务端会话 `ruyi_user_sessions` + httpOnly Cookie |
@@ -32,7 +34,7 @@
 - **验收**：未登录无法访问；不同用户登录后只看到自己的操作记录
 
 阶段 2 的具体规则（已按建议值确定）：
-- 账号由管理员创建，不开放注册；新建或重置密码后首次登录必须修改密码
+- 账号支持管理员创建及登录页直接注册（负责人于 2026-10-20 确认）；自助注册固定为普通用户，无需审核、注册后返回登录且无需首次改密；管理员创建或重置密码后首次登录仍必须修改密码
 - 密码 bcrypt（bcryptjs，cost 12），至少 8 位
 - 连续登录失败 5 次锁定 15 分钟；用户名不存在与密码错误返回同一提示
 - 会话：闲置 8 小时过期，最长 7 天；Cookie `ruyi_session`，httpOnly、SameSite=Lax；修改密码、停用账号时撤销该用户全部会话
@@ -81,6 +83,13 @@
 - 更新 Dockerfile 与 K8s 配置（API、Worker、登录桌面、Secret、Ingress）
 - **验收**：在开发网 K8s 上完成以上全部验收项
 
+### 阶段 7：目录与模块边界
+- 按负责人确认迁移至 `apps/web`、`apps/server`、`apps/worker`、`packages/automation`、`packages/shared`
+- 保留 JavaScript、CommonJS/Vue ESM、Kysely、现有路由及内嵌/独立 Worker 行为
+- 统一根依赖安装与锁；根数据、浏览器缓存、运维脚本和既有迁移保持原位置
+- 独立部署仓库兼容旧 Git ref 和新 workspace 两种构建布局
+- **验收**：完整测试、前端构建、浏览器冒烟、部署构建准备与数据/迁移文件校验通过
+
 ## 进度
 - [x] 准备：storageState 验证、数据库表结构与迁移文件（未在 bsg_dw 执行）
 - [x] 阶段 1（负责人已验收：成功在新服务上创建人群）
@@ -114,3 +123,8 @@
   - 端到端：上限 2 时第三个任务排队并自动执行；`kill -9` Worker 后任务进程全部结束、重启后标记为已中断且排队任务继续执行
   - 上线前需在 `bsg_dw` 执行迁移 005
   - 已知限制：管理员不能查看他人任务的日志内容（只能看状态）
+
+- [ ] 阶段 7（应用目录迁移与专项回归完成，等待主代理完整回归、部署适配与负责人验收）
+  - [x] 7.0 只读迁移设计与依赖边界确认
+  - [x] 7.1 应用 workspace 迁移、结构回归及当前目录文档适配（npm test 和登录态/Worker/审计数据库专项通过）
+  - [ ] 7.2 独立部署仓库兼容新旧构建布局

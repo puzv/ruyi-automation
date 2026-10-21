@@ -1,5 +1,5 @@
 const assert = require("node:assert/strict");
-const { detectMacArchitecture } = require("../lib/macos-arch");
+const { detectMacArchitecture } = require("@ruyi/shared/macos-arch");
 
 function detect(options = {}, values = {}) {
   const calls = [];

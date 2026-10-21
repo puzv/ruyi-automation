@@ -1,0 +1,11 @@
+{
+  "name": "@ruyi/worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "main": "src/index.js",
+  "dependencies": {
+    "@ruyi/shared": "*",
+    "@ruyi/automation": "*"
+  }
+}

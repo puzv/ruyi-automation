@@ -2,10 +2,12 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const vue = require('../web/node_modules/vue');
-const { parse, compileScript, compileTemplate } = require('../web/node_modules/@vue/compiler-sfc');
+const { createRequire } = require('node:module');
+const webRequire = createRequire(require.resolve('@ruyi/web/package.json'));
+const vue = webRequire('vue');
+const { parse, compileScript, compileTemplate } = webRequire('@vue/compiler-sfc');
 
-const filename = path.resolve(__dirname, '../web/src/views/PlatformLoginView.vue');
+const filename = path.resolve(__dirname, '../apps/web/src/views/PlatformLoginView.vue');
 const { descriptor } = parse(fs.readFileSync(filename, 'utf8'), { filename });
 // 同时检查真实 SFC 的编译，逻辑测试直接执行 script setup，不复制组件实现。
 compileScript(descriptor, { id: 'platform-login-test' });
@@ -68,8 +70,66 @@ function mount({ storage = new Map(), userId = 7, api } = {}) {
   };
 }
 
+async function testRemoteDesktop() {
+  const desktopFile = path.resolve(__dirname, '../apps/web/src/components/RemoteDesktop.vue');
+  const { descriptor: desktop } = parse(fs.readFileSync(desktopFile, 'utf8'), { filename: desktopFile });
+  compileScript(desktop, { id: 'remote-desktop-test' });
+  assert.deepEqual(compileTemplate({ filename: desktopFile, id: 'remote-desktop-test', source: desktop.template.content }).errors, []);
+  const script = desktop.scriptSetup.content.replace(/^import .*$/gm, '');
+  for (const [protocol, websocketProtocol] of [['http:', 'ws'], ['https:', 'wss']]) {
+    const props = vue.reactive({ sessionId: 'session /?#中文' });
+    const screen = {};
+    const clients = [];
+    let mounted;
+    let unmounted;
+    const scope = vue.effectScope();
+    const component = scope.run(() => vm.runInNewContext(`${script}\n;({ screen, status, connect })`, {
+      ...vue, defineProps: () => props,
+      onMounted: (fn) => { mounted = fn; }, onBeforeUnmount: (fn) => { unmounted = fn; },
+      location: { protocol, host: 'localhost:5174' },
+      RFB: class {
+        constructor(target, url, options) {
+          this.target = target; this.url = url; this.options = options;
+          this.events = {}; this.disconnected = false;
+          clients.push(this);
+        }
+        addEventListener(event, fn) { this.events[event] = fn; }
+        disconnect() { this.disconnected = true; }
+      },
+    }, { filename: desktopFile }));
+    const checkConnection = (client, sessionId) => {
+      assert.equal(client.target, component.screen.value);
+      assert.equal(client.url, `${websocketProtocol}://localhost:5174/api/platform-login/${encodeURIComponent(sessionId)}/vnc`);
+      assert.deepEqual(Array.from(client.options.wsProtocols), ['binary']);
+    };
+    try {
+      component.screen.value = screen;
+      mounted();
+      assert.equal(clients.length, 1);
+      checkConnection(clients[0], props.sessionId);
+      clients[0].events.connect();
+      assert.equal(component.status.value, '已连接');
+      clients[0].events.disconnect();
+      assert.equal(component.status.value, '已断开');
+      component.connect();
+      assert.equal(clients.length, 2);
+      assert.equal(clients[0].disconnected, true);
+      checkConnection(clients[1], props.sessionId);
+      props.sessionId = 'another-session';
+      await vue.nextTick();
+      assert.equal(clients.length, 3);
+      assert.equal(clients[1].disconnected, true);
+      checkConnection(clients[2], props.sessionId);
+    } finally {
+      unmounted();
+      scope.stop();
+    }
+    assert.equal(clients[2].disconnected, true);
+  }
+}
+
 async function testWorkbench() {
-  const workbenchFile = path.resolve(__dirname, '../web/src/views/WorkbenchView.vue');
+  const workbenchFile = path.resolve(__dirname, '../apps/web/src/views/WorkbenchView.vue');
   const { descriptor: workbench } = parse(fs.readFileSync(workbenchFile, 'utf8'), { filename: workbenchFile });
   compileScript(workbench, { id: 'workbench-test' });
   assert.deepEqual(compileTemplate({ filename: workbenchFile, id: 'workbench-test', source: workbench.template.content }).errors, []);
@@ -77,7 +137,7 @@ async function testWorkbench() {
   const calls = [];
   let status = 'none';
   let required = true;
-  const sandbox = { ...vue, ...await import('../web/src/labels.js'), ...Object.fromEntries(icons.map((name) => [name, {}])),
+  const sandbox = { ...vue, ...await import('../apps/web/src/labels.js'), ...Object.fromEntries(icons.map((name) => [name, {}])),
     onMounted() {}, onBeforeUnmount() {}, window: { clearTimeout() {} }, defineProps: () => ({ currentUser: { id: 7 }, page: '/' }), defineEmits() {}, defineExpose() {},
     async apiFetch(url) {
       calls.push(url);
@@ -269,6 +329,7 @@ async function main() {
   assert.equal(failingPage.component.summaryError.value, '无法连接服务');
   assert.equal(failingPage.component.restoring.value, false);
   failingPage.unmount();
+  await testRemoteDesktop();
   await testWorkbench();
   await require('./frontend-jobs.test')();
 }

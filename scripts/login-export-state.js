@@ -3,7 +3,7 @@
 //
 // 用法：node scripts/login-export-state.js [输出文件，默认 state-test.json]
 const path = require("path");
-const { loginTargets, pageLooksLoggedIn, probeSite, launchStateBrowser, saveState } = require("../lib/storage-state");
+const { loginTargets, pageLooksLoggedIn, probeSite, launchStateBrowser, saveState } = require("@ruyi/automation/lib/storage-state");
 
 const statePath = path.resolve(process.argv[2] || "state-test.json");
 const loginTimeoutMs = Number(process.env.RUYI_LOGIN_TIMEOUT_MS || 10 * 60 * 1000);

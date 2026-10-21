@@ -4,9 +4,9 @@ const { spawnSync } = require("child_process");
 const { sql } = require("kysely");
 const bcrypt = require("bcryptjs");
 const { createDb, readDbConfig } = require("../db");
-const users = require("../server/repos/users");
-const sessions = require("../server/repos/sessions");
-const { hashPassword, verifyPassword, validatePasswordStrength, validateUsername } = require("../server/auth/password");
+const users = require("@ruyi/shared/runtime/repos/users");
+const sessions = require("@ruyi/server/src/modules/auth/repository");
+const { hashPassword, verifyPassword, validatePasswordStrength, validateUsername } = require("@ruyi/server/src/modules/auth/password");
 
 async function clearTestData(db) {
   // 任务明确要求的测试库清理；业务代码中的操作记录仍然只追加。

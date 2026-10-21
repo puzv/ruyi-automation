@@ -2,13 +2,15 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const vue = require('../web/node_modules/vue');
-const { parse, compileScript, compileTemplate } = require('../web/node_modules/@vue/compiler-sfc');
+const { createRequire } = require('node:module');
+const webRequire = createRequire(require.resolve('@ruyi/web/package.json'));
+const vue = webRequire('vue');
+const { parse, compileScript, compileTemplate } = webRequire('@vue/compiler-sfc');
 
 const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
 const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
 function readComponent(relative) {
-  const filename = path.resolve(__dirname, '../web/src', relative);
+  const filename = path.resolve(__dirname, '../apps/web/src', relative);
   const { descriptor } = parse(fs.readFileSync(filename, 'utf8'), { filename });
   compileScript(descriptor, { id: 'jobs-test' });
   assert.deepEqual(compileTemplate({ filename, id: 'jobs-test', source: descriptor.template.content }).errors, []);
@@ -260,7 +262,7 @@ async function testTables(labels) {
 }
 
 async function main() {
-  const labels = await import('../web/src/labels.js');
+  const labels = await import('../apps/web/src/labels.js');
   assert.deepEqual({ ...labels.taskLabels }, { upload: '上传文件', create: '创建人群', analyse: '人群洞悉', download: '下载结果' });
   assert.deepEqual({ ...labels.jobStatusLabels }, { queued: '排队中', running: '运行中', succeeded: '成功', failed: '失败', cancelled: '已取消', interrupted: '已中断' });
   for (const [status, message] of Object.entries({

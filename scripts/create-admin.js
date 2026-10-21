@@ -3,8 +3,8 @@ const readline = require("readline");
 const { Writable } = require("stream");
 const { loadDotEnv } = require("../db/env");
 const { createDb } = require("../db");
-const users = require("../server/repos/users");
-const { hashPassword, validatePasswordStrength, validateUsername } = require("../server/auth/password");
+const users = require("@ruyi/shared/runtime/repos/users");
+const { hashPassword, validatePasswordStrength, validateUsername } = require("@ruyi/server/src/modules/auth/password");
 
 async function readPassword() {
   if (!process.stdin.isTTY) {

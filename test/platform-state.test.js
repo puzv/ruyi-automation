@@ -5,12 +5,12 @@ const os = require("node:os");
 const path = require("node:path");
 const vm = require("node:vm");
 const { createDb, readDbConfig } = require("../db");
-const users = require("../server/repos/users");
-const sessions = require("../server/repos/sessions");
-const { hashToken } = require("../server/auth/session");
-const { loadKeys, encryptState, decryptState, estimateExpiry } = require("../server/platform-state/crypto");
-const states = require("../server/repos/platform-states");
-const { loadUserState, storeCapturedState, storeRefreshedState, getStatusSummary } = require("../server/platform-state");
+const users = require("@ruyi/shared/runtime/repos/users");
+const sessions = require("@ruyi/server/src/modules/auth/repository");
+const { hashToken } = require("@ruyi/server/src/modules/auth/session");
+const { loadKeys, encryptState, decryptState, estimateExpiry } = require("@ruyi/shared/runtime/platform-state/crypto");
+const states = require("@ruyi/shared/runtime/repos/platform-states");
+const { loadUserState, storeCapturedState, storeRefreshedState, getStatusSummary } = require("@ruyi/shared/runtime/platform-state/index");
 
 const marker = "PLAINTEXT_MARKER_123";
 const expiry = Math.floor(Date.now() / 1000) + 86400;
@@ -86,7 +86,7 @@ function testCrypto() {
 
 async function testStartup() {
   // 在隔离上下文中验证入口，不读取 .env，也不启动服务或连接数据库。
-  const source = fs.readFileSync(path.join(__dirname, "../server/index.js"), "utf8");
+  const source = fs.readFileSync(path.join(__dirname, "../apps/server/src/main.js"), "utf8");
   async function run(env) {
     const result = { errors: [], dbCreated: false, events: [], handlers: {} };
     const exited = new Error("模拟退出");
@@ -94,17 +94,18 @@ async function testStartup() {
       async close() { result.events.push('app.close'); await Promise.resolve(); } };
     try {
       vm.runInNewContext(source, {
-        __dirname: path.join(__dirname, "../server"),
+        __dirname: path.dirname(require.resolve("@ruyi/server/src/main.js")),
         require(name) {
           if (name === "path") return path;
-          if (name === "../db/env") return { loadDotEnv() { result.dotEnvLoaded = true; } };
-          if (name === "./platform-state/crypto") return { loadKeys: () => loadKeys(env) };
-          if (name === "../db") return { createDb() { result.dbCreated = true; return {}; } };
+          if (name === "@ruyi/shared/paths") return require("@ruyi/shared/paths");
+          if (name === "../../../db/env") return { loadDotEnv() { result.dotEnvLoaded = true; } };
+          if (name === "@ruyi/shared/runtime/platform-state/crypto") return { loadKeys: () => loadKeys(env) };
+          if (name === "../../../db") return { createDb() { result.dbCreated = true; return {}; } };
           if (name === "./app") return { buildApp(options) {
             result.options = options; Object.assign(app, { db: options.db, stateKeys: options.stateKeys }); return app;
           } };
-          if (name === "../config") return { uploadRoot: '/tmp/测试工作区' };
-          if (name === "./worker") return { createWorker(options) {
+          if (name === "@ruyi/shared/config") return { uploadRoot: '/tmp/测试工作区' };
+          if (name === "@ruyi/worker/src/index") return { createWorker(options) {
             result.events.push('worker.create'); result.workerOptions = options;
             return { async start() { result.events.push('worker.start'); }, async stop() {} };
           } };
@@ -161,7 +162,7 @@ async function main() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ruyi-platform-state-test-"));
   const previousUploadDir = process.env.RUYI_UPLOAD_DIR;
   process.env.RUYI_UPLOAD_DIR = tempDir;
-  const { buildApp } = require("../server/app");
+  const { buildApp } = require("@ruyi/server/src/app");
   const db = createDb(config);
   let app;
   try {

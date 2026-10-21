@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const m = require('../lib/file-manifest');
+const m = require('@ruyi/automation/lib/file-manifest');
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'ruyi-manifest-'));
 const options = { username: 'pnalice', jobId: 'full-upload-job-001' };
 function workspace(name) {
@@ -88,7 +88,7 @@ try {
   assert.throws(() => m.prepareUpload(duplicate, options), (error) => error.message.includes('相同_pn.txt') && error.message.includes('重复_oaid.txt'));
   assert.deepEqual(snapshot(duplicate), duplicateBefore);
   for (const script of ['uploadAll.js', 'upload.js', 'move.js']) {
-    const result = spawnSync(process.execPath, [path.resolve(__dirname, '..', script)], {
+    const result = spawnSync(process.execPath, [require.resolve(`@ruyi/automation/${script}`)], {
       env: { ...process.env, RUYI_UPLOAD_DIR: duplicate, RUYI_USER: options.username, RUYI_JOB_ID: options.jobId,
         RUYI_PROFILE_DIR: path.join(temporary, 'profile-must-not-be-created'), RUYI_CHROME_PATH: '/missing-browser-for-test' },
       encoding: 'utf8',

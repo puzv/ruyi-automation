@@ -6,13 +6,13 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const { createDb, readDbConfig } = require('../db');
-const users = require('../server/repos/users');
-const sessions = require('../server/repos/sessions');
-const states = require('../server/repos/platform-states');
-const { hashToken } = require('../server/auth/session');
-const { loadKeys } = require('../server/platform-state/crypto');
-const { loadUserState, storeCapturedState } = require('../server/platform-state');
-const { sanitizeDetail } = require('../server/audit');
+const users = require('@ruyi/shared/runtime/repos/users');
+const sessions = require('@ruyi/server/src/modules/auth/repository');
+const states = require('@ruyi/shared/runtime/repos/platform-states');
+const { hashToken } = require('@ruyi/server/src/modules/auth/session');
+const { loadKeys } = require('@ruyi/shared/runtime/platform-state/crypto');
+const { loadUserState, storeCapturedState } = require('@ruyi/shared/runtime/platform-state/index');
+const { sanitizeDetail } = require('@ruyi/shared/runtime/audit');
 
 const marker = 'JOB_STATE_FAKE_COOKIE_42';
 const storageState = { cookies: [{ name: 'dn_token', value: marker, domain: '.datanexus.qq.com',
@@ -34,7 +34,7 @@ async function eventually(get, message) {
 
 async function testBrowser(tempDir) {
   const file = path.join(tempDir, 'browser-state.json');
-  const source = fs.readFileSync(path.join(__dirname, '../lib/browser.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '../packages/automation/lib/browser.js'), 'utf8');
   let writes = 0, contextClosed = 0, browserClosed = 0, launchOptions, contextOptions;
   const context = {
     pages: () => [{ isClosed: () => false, url: () => 'https://sso.e.qq.com/login' }],
@@ -50,14 +50,14 @@ async function testBrowser(tempDir) {
     require(name) {
       if (name === 'fs') return fs;
       if (name === 'path') return path;
-      if (name === './playwright-env') return {};
+      if (name === '@ruyi/shared/playwright-env') return {};
       if (name === 'playwright') return { chromium: {
         async launch(options) { launchOptions = options; return fakeBrowser; },
         launchPersistentContext() { assert.fail('不应启动共享 Profile'); },
       } };
-      if (name === '../config') return { stateFile: file, browserHeadless: true };
+      if (name === '@ruyi/shared/config') return { stateFile: file, browserHeadless: true };
       if (name === './preflight') return { waitForProfileRelease() { assert.fail('不应检查 Profile'); } };
-      if (name === './storage-state') return require('../lib/storage-state');
+      if (name === './storage-state') return require('@ruyi/automation/lib/storage-state');
       throw new Error('浏览器测试出现未预期依赖');
     },
   };
@@ -150,10 +150,10 @@ async function main() {
     spawned.at(-1).child = child;
     return child;
   };
-  const browser = require('../lib/browser');
+  const browser = require('@ruyi/automation/lib/browser');
   const originalLaunch = browser.launchBrowser;
   browser.launchBrowser = () => { throw new Error('任务登录态测试不得启动真实浏览器'); };
-  const platform = require('../server/platform');
+  const platform = require('@ruyi/server/src/modules/files/platform');
   const originals = { inspectPlatformFiles: platform.inspectPlatformFiles,
     inspectAnalyseAudience: platform.inspectAnalyseAudience, inspectInsightResults: platform.inspectInsightResults };
   let probeGate = null, probeStarted = 0;
@@ -167,11 +167,11 @@ async function main() {
     inspected.push({ names, providedState }); return names.length;
   };
   platform.inspectInsightResults = platform.inspectAnalyseAudience;
-  const { buildApp } = require('../server/app');
-  const { createWorker } = require('../server/worker');
-  const jobs = require('../server/repos/jobs');
-  const runtime = require('../server/state');
-  const { resolveWorkspace, ensureWorkspace } = require('../server/workspace');
+  const { buildApp } = require('@ruyi/server/src/app');
+  const { createWorker } = require('@ruyi/worker/src/index');
+  const jobs = require('@ruyi/shared/runtime/repos/jobs');
+  const runtime = require('@ruyi/server/src/state');
+  const { resolveWorkspace, ensureWorkspace } = require('@ruyi/shared/runtime/workspace');
   const db = createDb(config);
   let app;
   try {

@@ -68,7 +68,7 @@ function normalizeOptions(options = {}) {
   // 延迟加载 config，测试和调用方可以完全使用人工临时目录。
   let defaultSource;
   if (options.sourceRoot == null) {
-    defaultSource = require("../config").uploadRoot;
+    defaultSource = require("@ruyi/shared/config").uploadRoot;
   }
   for (const value of [options.sourceRoot, options.targetRoot]) {
     if (value != null && (typeof value !== "string" || !value.trim() || value.includes("\0"))) {

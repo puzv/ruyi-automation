@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { buildApp } = require("../server/app");
+const { buildApp } = require("@ruyi/server/src/app");
 
 async function main() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ruyi-server-test-"));

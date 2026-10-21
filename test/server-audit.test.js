@@ -6,11 +6,11 @@ const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { sql } = require('kysely');
 const { createDb, readDbConfig } = require('../db');
-const users = require('../server/repos/users');
-const { hashPassword } = require('../server/auth/password');
-const { loadKeys } = require('../server/platform-state/crypto');
-const { storeCapturedState } = require('../server/platform-state');
-const { sanitizeDetail, writeLog, auditFromRequest } = require('../server/audit');
+const users = require('@ruyi/shared/runtime/repos/users');
+const { hashPassword } = require('@ruyi/server/src/modules/auth/password');
+const { loadKeys } = require('@ruyi/shared/runtime/platform-state/crypto');
+const { storeCapturedState } = require('@ruyi/shared/runtime/platform-state/index');
+const { sanitizeDetail, writeLog, auditFromRequest } = require('@ruyi/shared/runtime/audit');
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruyi-audit-'));
 process.env.RUYI_UPLOAD_DIR = tempDir;
 const childProcess = require('node:child_process');
@@ -21,9 +21,9 @@ childProcess.spawn = () => {
   child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.pid = 999999;
   return child;
 };
-const { buildApp } = require('../server/app');
-const { createWorker } = require('../server/worker');
-const state = require('../server/state');
+const { buildApp } = require('@ruyi/server/src/app');
+const { createWorker } = require('@ruyi/worker/src/index');
+const state = require('@ruyi/server/src/state');
 const password = 'AuditPassword123';
 const nextPassword = 'AuditChanged123';
 const cookieOf = (r) => [].concat(r.headers['set-cookie'])[0].split(';')[0];
@@ -188,7 +188,7 @@ async function main() {
         else if (entry.name.endsWith('.js')) assert.doesNotMatch(fs.readFileSync(file, 'utf8'), /(?:updateTable|deleteFrom)\s*\(\s*['"]ruyi_operation_logs['"]/);
       }
     }
-    check(path.join(__dirname, '../server'));
+    for (const folder of ['../apps/server/src', '../apps/worker/src', '../packages/shared/runtime']) check(path.join(__dirname, folder));
     assert.equal(typeof adminId, 'number');
     console.log('操作记录写入、脱敏、任务关联和查询权限测试通过。');
   } finally {

@@ -1,0 +1,393 @@
+const fs = require("fs");
+const path = require("path");
+require("@ruyi/shared/playwright-env");
+const { chromium } = require("playwright");
+const { uploadRootCandidates, profileDir, chromePath, urls, browserHeadless } = require("@ruyi/shared/config");
+const { requireUploadRoot } = require("./lib/paths");
+const { readJsonArray, writeJsonArray } = require("./lib/files");
+const { launchBrowser, closeBrowserContext } = require("./lib/browser");
+const { navigateWithLogin } = require("./lib/login");
+const { planUpload, prepareUpload, requireMapping, updateStage, pendingCandidates } = require("./lib/file-manifest");
+let uploadRoot;
+
+
+const folderConfigs = [
+  {
+    idType: "pn",
+    importUrl: urls.pnImport,
+    successUrl: urls.pnUpload,
+  },
+  {
+    idType: "idfa",
+    importUrl: urls.idfaImport,
+    successUrl: urls.idfaUpload,
+  },
+  {
+    idType: "oaid",
+    importUrl: urls.oaidImport,
+    successUrl: urls.oaidUpload,
+  },
+];
+
+
+function getFiles(folder, idType) {
+  return pendingCandidates(uploadRoot)
+    .filter((item) => item.type === idType && path.dirname(item.path) === folder)
+    .map((item) => item.path).sort();
+}
+
+function moveToDone(files, folder) {
+  const doneDir = path.join(folder, "done");
+  fs.mkdirSync(doneDir, { recursive: true });
+  const destinations = files.map((file) => path.join(doneDir, path.basename(file)));
+  const existing = destinations.find((destination) => fs.existsSync(destination));
+  if (existing) {
+    throw new Error(`done 文件夹中已存在同名文件，不会覆盖：${existing}`);
+  }
+  files.forEach((file, index) => {
+    updateStage(uploadRoot, withoutExtension(path.basename(file)), "uploaded");
+    fs.renameSync(file, destinations[index]);
+    const name = withoutExtension(path.basename(file));
+    updateStage(uploadRoot, name, "uploaded", destinations[index]);
+    console.log(`已移动到：${destinations[index]}`);
+  });
+}
+
+function withoutExtension(fileName) {
+  return path.basename(fileName).replace(/\.(?:txt|csv)$/i, "");
+}
+
+function platformFileName(fileName) {
+  // 平台人群文件名最多 30 个字符；Array.from 按 Unicode 字符截取，避免截断中文代理项。
+  return Array.from(withoutExtension(fileName)).slice(0, 30).join('');
+}
+
+function platformUploadKey(fileName) {
+  // The import page normalizes punctuation (for example `.` -> `_`) before
+  // truncating names to 30 Unicode characters.  Files that collide after
+  // this normalization are silently collapsed by the widget when selected
+  // together, so rename later files before selecting the batch.
+  const normalized = withoutExtension(fileName)
+    .replace(/[^A-Za-z0-9\u4e00-\u9fff_-]/g, "_");
+  return Array.from(normalized).slice(0, 30).join("");
+}
+
+function resolveBatchNameCollisions(files, folder, limit = 5) {
+  const batch = files.slice(0, limit);
+  const usedKeys = new Set();
+  const reservedKeys = new Set(batch.map((file) => platformUploadKey(file)));
+  const resolved = [];
+  const doneDir = path.join(folder, "done");
+  for (const sourceFile of batch) {
+    let file = sourceFile;
+    let key = platformUploadKey(file);
+    if (usedKeys.has(key)) {
+      const name = path.basename(sourceFile);
+      const extensionMatch = name.match(/\.(?:txt|csv)$/i);
+      const extension = extensionMatch ? extensionMatch[0] : "";
+      const stem = name.slice(0, name.length - extension.length);
+      for (let prefix = 1; ; prefix += 1) {
+        const candidateName = `${prefix}${stem}${extension}`;
+        const candidate = path.join(folder, candidateName);
+        const candidateKey = platformUploadKey(candidateName);
+        if (usedKeys.has(candidateKey) || reservedKeys.has(candidateKey)
+          || fs.existsSync(candidate)
+          || fs.existsSync(path.join(doneDir, candidateName))) continue;
+        fs.renameSync(sourceFile, candidate);
+        file = candidate;
+        key = candidateKey;
+        console.log(`检测到平台名称冲突，已重命名：${name} -> ${candidateName}`);
+        break;
+      }
+    }
+    usedKeys.add(key);
+    resolved.push(file);
+  }
+  return resolved;
+}
+
+function findExistingFileInBatch(message, batch) {
+  const match = String(message).match(/文件名\s*(.+?)已存在/);
+  if (!match) return null;
+  const requested = withoutExtension(match[1].trim());
+  return batch.find((file) => withoutExtension(file) === requested
+    || platformUploadKey(file) === requested) || null;
+}
+
+function appendCreateGroupTodoList(uploadRoot, files) {
+  const candidates = [
+    path.join(uploadRoot, "createGroupToDoList.json"),
+    path.join(uploadRoot, "creategrouptodolist.json"),
+  ];
+  const todoPath = candidates.find((file) => fs.existsSync(file)) || candidates[0];
+  const todo = readJsonArray(todoPath, "创建任务清单")
+    .filter((name) => typeof name === "string")
+    .map(platformFileName);
+  const existing = new Set(todo);
+  let added = 0;
+
+  files.forEach((file) => {
+    const name = platformFileName(file);
+    if (!name) return;
+    if (!existing.has(name)) {
+      todo.push(name);
+      existing.add(name);
+      added += 1;
+    }
+  });
+  writeJsonArray(todoPath, todo);
+  console.log(`已更新创建任务清单：${todoPath}（新增 ${added} 个文件，当前 ${todo.length} 个）`);
+}
+
+async function waitForUploadSuccessCount(page, expected, timeout = 60000) {
+  // Count the upload widget's success status nodes, rather than arbitrary
+  // page text.  This remains correct if the surrounding copy changes.
+  const success = page.locator('[class*="_fileItemStatusText_"]')
+    .filter({ hasText: /^(上传成功|导入成功|文件上传成功)$/i });
+  const deadline = Date.now() + timeout;
+  let lastVisibleCount = 0;
+  while (Date.now() < deadline) {
+    const count = await success.count();
+    let visibleCount = 0;
+    for (let index = 0; index < count; index += 1) {
+      if (await success.nth(index).isVisible().catch(() => false)) {
+        visibleCount += 1;
+      }
+    }
+    lastVisibleCount = visibleCount;
+    if (visibleCount >= expected) return visibleCount;
+    await page.waitForTimeout(250);
+  }
+  return lastVisibleCount;
+}
+
+async function setUploadFiles(page, files) {
+  const fileInput = page.locator('input[type="file"]').first();
+  // Newer builds render the hidden input eagerly. This is the least invasive
+  // path and avoids opening a native chooser in headless mode.
+  if (await fileInput.count()) {
+    try {
+      // A selector can briefly match a node that is being replaced by the
+      // upload component. Use a short attachment window so that transient
+      // nodes do not turn into the original 30s timeout.
+      await fileInput.waitFor({ state: "attached", timeout: 3000 });
+      await fileInput.setInputFiles(files, { timeout: 10000 });
+      return;
+    } catch (error) {
+      if (!/Timeout|detached|not attached|closed/i.test(error.message || "")) throw error;
+    }
+  }
+
+  // Older/dynamic builds create the input only as a result of clicking the
+  // upload control. Use Playwright's filechooser event so this also works in
+  // headless mode and does not depend on a transient DOM node.
+  const trigger = page.getByText("文件上传", { exact: true }).first();
+  const chooserPromise = page.waitForEvent("filechooser", { timeout: 10000 }).catch(() => null);
+  await trigger.click();
+  const chooser = await chooserPromise;
+  if (chooser) {
+    await chooser.setFiles(files);
+    return;
+  }
+
+  // If the click mounted an input but did not emit filechooser, use the new
+  // node as a final compatibility fallback.
+  await fileInput.waitFor({ state: "attached", timeout: 10000 });
+  await fileInput.setInputFiles(files);
+}
+
+async function waitForSubmitNavigationOrFailure(page, successUrl, timeout = 60000) {
+  const failure = page.getByText(/请等待文件上传成功或删除尚未上传成功的文件/i).last();
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (page.url().startsWith(successUrl)) {
+      return { type: "success", message: page.url() };
+    }
+    if (await failure.isVisible().catch(() => false)) {
+      return { type: "failure", message: (await failure.innerText()).trim() };
+    }
+    const notices = page.locator('[role="alert"], [class*="message"], [class*="toast"], [class*="notify"]');
+    for (let index = 0; index < await notices.count(); index += 1) {
+      const notice = notices.nth(index);
+      if (!(await notice.isVisible().catch(() => false))) continue;
+      const message = (await notice.innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+      if (message && /已存在|文件名|上传失败|提交失败|请等待/.test(message)) {
+        console.log(`检测到页面消息：${message}`);
+        return { type: "failure", message };
+      }
+    }
+    await page.waitForTimeout(250);
+  }
+  return null;
+}
+
+async function uploadFolder(context, page, config) {
+  const completedFiles = [];
+  const folder = path.join(uploadRoot, config.idType);
+  const pending = getFiles(folder, config.idType);
+  const managed = pending.some((file) => !requireMapping(uploadRoot, path.basename(file)).legacy);
+  const files = managed ? pending.slice(0, 5) : resolveBatchNameCollisions(pending, folder, 5);
+  if (files.length === 0) {
+    console.log(`${config.idType.toUpperCase()} 文件夹没有待上传文件，跳过：${folder}`);
+    return completedFiles;
+  }
+
+  console.log(`开始处理 ${config.idType.toUpperCase()} 文件夹，共 ${files.length} 个文件`);
+  for (let offset = 0; offset < files.length; offset += 5) {
+    const batch = files.slice(offset, offset + 5);
+    const batchEnd = offset + batch.length;
+    console.log(`开始第 ${offset / 5 + 1} 批：${batch.length} 个文件（${offset + 1}-${batchEnd}/${files.length}）`);
+
+    page = await navigateWithLogin(context, page, {
+      url: config.importUrl,
+      expectedPath: "/web/workbench/file/import",
+      label: `${config.idType.toUpperCase()} 文件导入页面`,
+      headless: browserHeadless,
+      ready: async (candidate) => (
+        await candidate.getByText("文件上传", { exact: true }).first().isVisible().catch(() => false)
+        || await candidate.locator('input[type="file"]').first().count() > 0
+      ),
+    });
+    await page.waitForTimeout(1500);
+    batch.forEach((file) => updateStage(uploadRoot, withoutExtension(path.basename(file)), "uploading"));
+    await setUploadFiles(page, batch);
+    await page.waitForTimeout(1000);
+    console.log(`已一次性选择第 ${offset + 1}-${batchEnd}/${files.length} 个 ${config.idType.toUpperCase()} 文件：${batch.map((file) => path.basename(file)).join("、")}`);
+    const successCount = await waitForUploadSuccessCount(page, batch.length);
+    if (successCount < batch.length) {
+      throw new Error(`第 ${offset + 1}-${batchEnd}/${files.length} 个文件未全部上传成功（检测到 ${successCount}/${batch.length} 个成功提示）`);
+    }
+    console.log(`第 ${offset + 1}-${batchEnd}/${files.length} 个文件全部上传成功（${successCount}/${batch.length}）`);
+
+    const submitDelaySeconds = 2;
+    console.log(`第 ${offset / 5 + 1} 批上传成功，固定等待 ${submitDelaySeconds} 秒后提交...`);
+    await page.waitForTimeout(submitDelaySeconds * 1000);
+    const submitButton = page.getByText("提交", { exact: true }).last();
+    const submitDeadline = Date.now() + 30000;
+    while (true) {
+      const ready = await submitButton.isVisible().catch(() => false) &&
+        await submitButton.isEnabled().catch(() => false);
+      if (ready) break;
+      if (Date.now() >= submitDeadline) {
+        throw new Error(`${config.idType.toUpperCase()} 第 ${offset / 5 + 1} 批上传成功，但提交按钮在 30 秒内没有变为可用`);
+      }
+      await page.waitForTimeout(200);
+    }
+    let submitSuccessMessage = null;
+    for (let attempt = 1; attempt <= 60; attempt += 1) {
+      // The result page navigation can be lost even after batchCreate commits.
+      // Observe the API response as the source of truth so a successful submit
+      // is not retried and turned into a misleading duplicate-name error.
+      const batchResponse = page.waitForResponse(
+        (response) => response.url().includes("/fileaccess/api/access/batchCreate"),
+        { timeout: 60000 },
+      ).then(async (response) => {
+        let payload = null;
+        try { payload = await response.json(); } catch (_) { /* non-JSON response */ }
+        const explicitFailure = payload && (
+          (typeof payload.code === "number" && payload.code !== 0)
+          || (typeof payload.ret === "number" && payload.ret !== 0)
+          || payload.success === false
+        );
+        // Different deployments wrap the success payload differently (code,
+        // ret, or just an HTTP 2xx response). Only an explicit business
+        // failure should trigger a retry.
+        if (response.ok() && !explicitFailure) {
+          return { type: "success", message: `batchCreate ${response.status()}` };
+        }
+        const message = payload?.message || payload?.msg || "提交接口失败";
+        return { type: "failure", message };
+      }).catch(() => null);
+      await submitButton.click();
+      const submitResult = await Promise.race([
+        batchResponse,
+        waitForSubmitNavigationOrFailure(page, config.successUrl),
+      ]);
+      if (submitResult?.type === "success") {
+        submitSuccessMessage = submitResult.message;
+        break;
+      }
+      if (submitResult?.type === "failure") {
+        const existingFile = findExistingFileInBatch(submitResult.message, batch);
+        if (existingFile) {
+          console.log(`检测到文件名已存在：${path.basename(existingFile)}，将其视为已处理并重新开始上传流程。`);
+          updateStage(uploadRoot, withoutExtension(path.basename(existingFile)), "uploaded");
+          appendCreateGroupTodoList(uploadRoot, [existingFile]);
+          moveToDone([existingFile], folder);
+          completedFiles.push(existingFile);
+          return completedFiles;
+        }
+        console.log(`第 ${attempt} 次提交提示文件仍未全部上传成功，等待 2 秒后重试：${submitResult.message}`);
+        await page.waitForTimeout(2000);
+        continue;
+      }
+      console.log(`第 ${attempt} 次提交后 60 秒内未检测到结果，等待 2 秒后继续提交...`);
+      await page.waitForTimeout(2000);
+    }
+    if (!submitSuccessMessage) {
+      throw new Error(`${config.idType.toUpperCase()} 第 ${offset / 5 + 1} 批提交重试 60 次后仍未成功，流程超时`);
+    }
+    console.log(`${config.idType.toUpperCase()} 第 ${offset / 5 + 1} 批已跳转到提交结果页面：${submitSuccessMessage}`);
+    batch.forEach((file) => updateStage(uploadRoot, withoutExtension(path.basename(file)), "uploaded"));
+    appendCreateGroupTodoList(uploadRoot, batch);
+    moveToDone(batch, folder);
+    completedFiles.push(...batch);
+  }
+  return completedFiles;
+}
+
+async function main() {
+  uploadRoot = requireUploadRoot("上传");
+  let context;
+  let completedFiles = [];
+  try {
+    const plan = planUpload(uploadRoot);
+    if (plan.named) prepareUpload(uploadRoot);
+    // A crash after queue persistence but before archive movement must resume
+    // locally; never submit the already acknowledged batch again.
+    for (const config of folderConfigs) {
+      const folder = path.join(uploadRoot, config.idType);
+      const recovered = getFiles(folder, config.idType).filter((file) =>
+        requireMapping(uploadRoot, path.basename(file)).stage === "uploaded");
+      if (recovered.length) {
+        appendCreateGroupTodoList(uploadRoot, recovered);
+        moveToDone(recovered, folder);
+      }
+    }
+    if (!folderConfigs.some((item) => getFiles(path.join(uploadRoot, item.idType), item.idType).length)) {
+      console.log("没有待上传文件，准备或恢复已完成。");
+      return;
+    }
+    context = await launchBrowser();
+    const page = context.pages()[0] || (await context.newPage());
+    page.on('dialog', async (dialog) => {
+      console.log(`检测到浏览器弹窗：${dialog.message()}`);
+      await dialog.dismiss().catch(() => {});
+    });
+    const config = folderConfigs.find((item) => {
+      const folder = path.join(uploadRoot, item.idType);
+      return getFiles(folder, item.idType).length > 0;
+    });
+    if (config) {
+      completedFiles = await uploadFolder(context, page, config);
+    } else {
+      console.log("IDFA、OAID 和 PN 文件夹中都没有待上传文件。");
+    }
+    if (completedFiles.length > 0) appendCreateGroupTodoList(uploadRoot, completedFiles);
+    console.log("本次上传操作完成。");
+  } catch (error) {
+    console.error("上传流程失败：", error.message);
+    process.exitCode = 1;
+  } finally {
+    if (context) {
+      await closeBrowserContext(context);
+      console.log("浏览器已关闭，上传脚本结束。");
+    }
+  }
+}
+
+if (require.main === module) main().catch((error) => {
+  console.error(`上传流程失败：${error.message}`);
+  process.exitCode = 1;
+});
+module.exports = { main, appendCreateGroupTodoList, platformFileName };

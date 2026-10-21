@@ -5,16 +5,16 @@ const os = require('node:os');
 const path = require('node:path');
 const { sql } = require('kysely');
 const { createDb, readDbConfig } = require('../db');
-const users = require('../server/repos/users');
-const { hashPassword, verifyPassword } = require('../server/auth/password');
-const { loadKeys } = require('../server/platform-state/crypto');
+const users = require('@ruyi/shared/runtime/repos/users');
+const { hashPassword, verifyPassword } = require('@ruyi/server/src/modules/auth/password');
+const { loadKeys } = require('@ruyi/shared/runtime/platform-state/crypto');
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruyi-auth-test-'));
 const previousUploadDir = process.env.RUYI_UPLOAD_DIR;
 process.env.RUYI_UPLOAD_DIR = tempDir;
 
 // 在加载路由前封住真实操作，鉴权回归也不能启动浏览器或脚本。
-const browser = require('../lib/browser');
+const browser = require('@ruyi/automation/lib/browser');
 const childProcess = require('node:child_process');
 const originals = { ...browser };
 const processMethods = ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork'];
@@ -23,7 +23,7 @@ const unexpectedOperation = () => { throw new Error('测试不得启动浏览器
 browser.launchBrowser = unexpectedOperation;
 browser.closeBrowserContext = async (context) => context.close();
 for (const name of processMethods) childProcess[name] = unexpectedOperation;
-const { buildApp } = require('../server/app');
+const { buildApp } = require('@ruyi/server/src/app');
 
 const password = 'AuthTest123';
 const nextPassword = 'ChangedTest123';

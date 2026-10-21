@@ -3,8 +3,14 @@
 本项目是如翼 / DataNexus 人群包自动化工具，正在从“单人本地工具”重构为“多人使用的平台”。
 重构计划与当前进度见 `docs/REFACTOR_PLAN.md`。每次任务只做任务说明里要求的范围，不要顺手改其他内容。
 
+## 目录边界
+- `apps/server/src/main.js` 为 API 入口，业务代码放 `modules/`；`apps/worker/src/main.js` 为独立 Worker 入口，默认仍由 `npm start` 内嵌运行。
+- `packages/automation/` 保存自动化脚本与工具；`packages/shared/` 保存配置、根路径及 API/Worker 共用的 `runtime/`。shared 不依赖 apps 或 automation，worker 不依赖 server；server 可单向组合 worker。
+- `db/`、`scripts/`、`test/`、`docs/` 保留在仓库根。仅根目录运行 `npm ci`，统一使用根 lockfile；不要硬编码 workspace 的 node_modules 路径。
+- `projectRoot` 通过 `packages/shared/paths.js` 定位仓库根；`.env`、数据、Profile 和浏览器缓存均保持原位置。
+
 ## 代码风格
-- Node.js，CommonJS（`require` / `module.exports`），与现有文件一致；`web/` 前端是 Vue 3 + Vite（ESM）。
+- Node.js，CommonJS（`require` / `module.exports`），与现有文件一致；`apps/web/` 前端是 Vue 3 + Vite（ESM）。
 - 面向用户的提示、日志、错误信息用中文；代码注释保持现有密度，说明“为什么”，不复述代码。
 - 不引入任务说明以外的新依赖。
 
@@ -23,7 +29,7 @@
 - `ruyi_operation_logs` 只追加，代码中不得 UPDATE / DELETE 该表。
 
 ## 登录态
-- 平台登录态使用 Playwright storageState（见 `lib/storage-state.js`、`lib/browser.js` 的 `RUYI_STATE_FILE` 模式）。
+- 平台登录态使用 Playwright storageState（见 `packages/automation/lib/storage-state.js`、`packages/automation/lib/browser.js` 的 `RUYI_STATE_FILE` 模式）。
 - 判断“已登录”必须依据登录后才出现的业务元素并保持数秒，不能只看 URL 或页面文字。
 - 检测到已退出登录时不得回写登录态。
 - 登录态明文（storageState JSON）只能存在于内存或权限 600 的临时文件中，用完立即删除；不得写日志、不得出现在接口响应和操作记录中。加密密钥 `RUYI_STATE_KEY` 只从环境变量读取。

@@ -2,8 +2,8 @@ const assert = require("assert");
 const { randomUUID } = require("crypto");
 const { sql } = require("kysely");
 const { createDb, readDbConfig } = require("../db");
-const users = require("../server/repos/users");
-const jobs = require("../server/repos/jobs");
+const users = require("@ruyi/shared/runtime/repos/users");
+const jobs = require("@ruyi/shared/runtime/repos/jobs");
 
 const usernames = ["jobs_repo_a", "jobs_repo_b"];
 

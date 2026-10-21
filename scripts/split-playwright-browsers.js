@@ -2,7 +2,10 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
-const projectRoot = path.resolve(__dirname, "..");
+const { projectRoot } = require("@ruyi/shared/paths");
+const { createRequire } = require("node:module");
+const playwrightRequire = createRequire(require.resolve("@ruyi/shared/package.json"));
+const browserRequire = createRequire(playwrightRequire.resolve("playwright/package.json"));
 const defaults = {
   sourceDir: path.join(projectRoot, "1"),
   outputDir: path.join(projectRoot, "browser-release"),
@@ -67,7 +70,7 @@ function splitArchive(sourcePath, archiveName, outputDir, chunkBytes) {
 
 function main() {
   const options = parseArgs(process.argv.slice(2));
-  const chromium = require(path.join(projectRoot, "node_modules/playwright-core/browsers.json"))
+  const chromium = browserRequire("playwright-core/browsers.json")
     .browsers.find((browser) => browser.name === "chromium");
   if (!chromium?.revision) throw new Error("无法从当前 Playwright 依赖读取 Chromium revision");
   const archives = {
@@ -100,7 +103,7 @@ function main() {
   }
   const manifest = {
     schemaVersion: 1,
-    playwrightVersion: require(path.join(projectRoot, "package.json")).dependencies.playwright,
+    playwrightVersion: playwrightRequire("playwright/package.json").version,
     chromiumRevision: chromium.revision,
     chunkSize: chunkBytes,
     platforms,
