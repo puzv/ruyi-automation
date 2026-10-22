@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ruyi-upload
+  namespace: ruyi-dev
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ruyi-upload
+  template:
+    metadata:
+      labels:
+        app: ruyi-upload
+    spec:
+      securityContext:
+        fsGroup: 1000
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: app
+          image: <COMPANY_REGISTRY>/ruyi-upload:<APP_VERSION>
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 5173
+          env:
+            - name: NODE_ENV
+              value: development
+            - name: RUYI_UPLOAD_DIR
+              value: /data/upload
+            - name: RUYI_PROFILE_DIR
+              value: /data/profile
+            - name: RUYI_HEADLESS
+              value: "1"
+          volumeMounts:
+            - name: upload-data
+              mountPath: /data/upload
+            - name: profile-data
+              mountPath: /data/profile
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+      volumes:
+        - name: upload-data
+          persistentVolumeClaim:
+            claimName: ruyi-upload
+        - name: profile-data
+          persistentVolumeClaim:
+            claimName: ruyi-profile
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ruyi-upload
+  namespace: ruyi-dev
+spec:
+  type: ClusterIP
+  selector:
+    app: ruyi-upload
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

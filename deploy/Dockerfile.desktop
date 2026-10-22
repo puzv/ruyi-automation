@@ -1,0 +1,4 @@
+# 兼容入口：桌面已并入主镜像；新旧源码布局均须传入本次构建的 APP_IMAGE。
+# 禁止使用旧 desktop 镜像；新版只通过应用鉴权入口提供桌面。
+ARG APP_IMAGE
+FROM ${APP_IMAGE}

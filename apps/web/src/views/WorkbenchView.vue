@@ -19,6 +19,7 @@ import {
 } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { apiFetch } from '../api.js'
+import { observeResultJob, downloadJobResults } from '../result-download.js'
 import { formatTime, isActiveJob, jobNotice, taskLabels, jobStatusLabels } from '../labels.js'
 
 const props = defineProps({ currentUser: { type: Object, required: true }, page: { type: String, default: '/' } })
@@ -31,6 +32,8 @@ const jobs = ref([])
 const submitting = ref({})
 const cancelling = ref({})
 const submissionError = ref('')
+const downloadNotice = ref('')
+const downloadingResult = ref(false)
 const currentJob = computed(() => jobs.value.find((job) => job.id === jobId.value))
 const running = computed(() => isActiveJob(currentJob.value) ? currentJob.value.task : '')
 const jobTimers = new Map()
@@ -173,6 +176,18 @@ function updateJob(job) {
   if (index < 0) jobs.value.push(job)
   else jobs.value[index] = { ...jobs.value[index], ...job }
   if (jobId.value === job.id && !submissionError.value) notice.value = jobNotice(job)
+  observeResultJob(job).then((message) => {
+    if (!disposed && message) downloadNotice.value = message
+  }).catch((error) => {
+    if (!disposed) downloadNotice.value = `ZIP 下载未发起：${error.message}。可在“我的任务”中重新下载。`
+  })
+}
+async function redownloadResult() {
+  if (downloadingResult.value || !currentJob.value) return
+  downloadingResult.value = true
+  try { downloadNotice.value = await downloadJobResults(currentJob.value) }
+  catch (error) { downloadNotice.value = error.message || '无法下载结果，请重试' }
+  finally { downloadingResult.value = false }
 }
 function selectJob() {
   if (currentJob.value) notice.value = jobNotice(currentJob.value)
@@ -369,7 +384,9 @@ async function cancelJob() {
           <label v-if="jobs.length > 1">查看任务 <select v-model="jobId" @change="selectJob"><option v-for="job in jobs" :key="job.id" :value="job.id">{{ taskLabels[job.task] }} · {{ jobStatusLabels[job.status] }} · {{ job.id.slice(0, 8) }}</option></select></label>
           <span role="status">{{ jobNotice(currentJob) }}</span>
           <button v-if="isActiveJob(currentJob)" class="secondary-button" type="button" :disabled="cancelling[jobId] || currentJob.cancelRequested" @click="cancelJob">取消任务</button>
+          <button v-if="currentJob.task === 'download' && currentJob.status === 'succeeded'" class="secondary-button" type="button" :disabled="downloadingResult" @click="redownloadResult">重新下载</button>
         </div>
+        <p v-if="downloadNotice" role="status">{{ downloadNotice }}</p>
         <pre v-if="currentJob" class="job-log">{{ jobLog || '暂无日志' }}</pre>
         <a v-if="currentJob && !isActiveJob(currentJob)" class="job-log-link" :href="`/api/jobs/${encodeURIComponent(jobId)}/log`" target="_blank" rel="noopener noreferrer">查看完整日志</a>
       </section>

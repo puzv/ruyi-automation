@@ -87,7 +87,7 @@
 - 按负责人确认迁移至 `apps/web`、`apps/server`、`apps/worker`、`packages/automation`、`packages/shared`
 - 保留 JavaScript、CommonJS/Vue ESM、Kysely、现有路由及内嵌/独立 Worker 行为
 - 统一根依赖安装与锁；根数据、浏览器缓存、运维脚本和既有迁移保持原位置
-- 独立部署仓库兼容旧 Git ref 和新 workspace 两种构建布局
+- 主仓库 `deploy/` 兼容旧 Git ref 和新 workspace 两种构建布局
 - **验收**：完整测试、前端构建、浏览器冒烟、部署构建准备与数据/迁移文件校验通过
 
 ## 进度
@@ -127,4 +127,4 @@
 - [ ] 阶段 7（应用目录迁移与专项回归完成，等待主代理完整回归、部署适配与负责人验收）
   - [x] 7.0 只读迁移设计与依赖边界确认
   - [x] 7.1 应用 workspace 迁移、结构回归及当前目录文档适配（npm test 和登录态/Worker/审计数据库专项通过）
-  - [ ] 7.2 独立部署仓库兼容新旧构建布局
+  - [x] 7.2 `deploy/` 构建适配新旧布局（离线验证完成；真实镜像构建与线上发布另行验收）

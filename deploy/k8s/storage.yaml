@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ruyi-upload
+  namespace: ruyi-dev
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  # Ask your platform team for the correct StorageClass, then uncomment:
+  # storageClassName: <COMPANY_STORAGE_CLASS>
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ruyi-profile
+  namespace: ruyi-dev
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  # Ask your platform team for the correct StorageClass, then uncomment:
+  # storageClassName: <COMPANY_STORAGE_CLASS>

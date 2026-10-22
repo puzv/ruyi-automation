@@ -3,6 +3,7 @@ const { constants } = require('node:fs')
 const path = require('node:path')
 const jobs = require('@ruyi/shared/runtime/repos/jobs')
 const { resolveWorkspace } = require('@ruyi/shared/runtime/workspace')
+const { resultEntries, zipStream } = require('@ruyi/shared/runtime/job-results')
 
 function pagination(query) {
   const parse = (value, fallback) => value === undefined ? fallback
@@ -67,6 +68,38 @@ async function registerJobRoutes(app, { dataRoot }) {
     if (!row) return notFound(reply)
     const { output, truncated } = await readJobLog(row, dataRoot, 5 * 1024 * 1024)
     return reply.type('text/plain; charset=utf-8').send(`${truncated ? '（日志过长，仅显示最后 5MB）\n' : ''}${output}`)
+  })
+  const resultsFor = async (req, reply) => {
+    const row = await ownJob(req)
+    if (!row) { notFound(reply); return null }
+    if (row.task !== 'download' || row.status !== 'succeeded') {
+      reply.code(409).send({ ok: false, message: '仅成功的下载结果任务可以下载 ZIP' }); return null
+    }
+    try {
+      const workspace = resolveWorkspace(req.user, dataRoot)
+      return { workspace, entries: resultEntries(workspace, row.id) }
+    } catch (error) {
+      reply.code(409).send({ ok: false, message: error.code === 'ENOENT'
+        ? '该任务没有结果归档（旧任务不支持重新下载）'
+        : /^(?:结果|本次任务)/.test(error.message) && !error.code ? error.message
+          : '本次任务结果不可下载，归档不完整' })
+      return null
+    }
+  }
+  app.get('/api/jobs/:id/results', async (req, reply) => {
+    const result = await resultsFor(req, reply)
+    if (!result) return
+    return { ok: true, count: result.entries.files.length, size: result.entries.size }
+  })
+  app.get('/api/jobs/:id/results.zip', async (req, reply) => {
+    const result = await resultsFor(req, reply)
+    if (!result) return
+    const stream = zipStream(result.workspace, req.params.id, result.entries)
+    reply.raw.once('close', () => stream.destroy())
+    return reply.header('Cache-Control', 'private, no-store')
+      .header('X-Content-Type-Options', 'nosniff')
+      .header('Content-Disposition', `attachment; filename="ruyi-results-${req.params.id}.zip"`)
+      .header('Content-Length', result.entries.size).type('application/zip').send(stream)
   })
   app.post('/api/jobs/:id/cancel', async (req, reply) => {
     const result = await jobs.requestCancel(app.db, { id: req.params.id, userId: req.user.id })

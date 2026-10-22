@@ -263,16 +263,21 @@ function resolveDownloadTarget(uploadRoot, platformName, suggestedName) {
   const stem = path.basename(original, path.extname(original))
   assertSafeName(stem, '结果主文件名')
   const resultName = mapping.legacy ? suggestedName : `${stem}${extension}`
+  if (process.env.RUYI_RESULT_JOB_ID) {
+    return require('@ruyi/shared/runtime/job-results').resolveResultTarget(uploadRoot, process.env.RUYI_RESULT_JOB_ID, resultName)
+  }
   const target = assertWorkspacePath(uploadRoot, path.join(uploadRoot, 'result', resultName))
   if (lstat(target)) throw new Error(`下载结果已存在，不会覆盖：${path.basename(target)}`)
   return target
 }
 function saveDownloadedFile(uploadRoot, platformName, suggestedName, source) {
   const target = resolveDownloadTarget(uploadRoot, platformName, suggestedName)
-  fs.mkdirSync(path.dirname(target), { recursive: true })
-  // COPYFILE_EXCL closes the existence-check race and leaves the queue intact
-  // on conflict. The source is Playwright's completed temporary download.
-  fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL)
+  if (process.env.RUYI_RESULT_JOB_ID) {
+    require('@ruyi/shared/runtime/job-results').recordResult(uploadRoot, process.env.RUYI_RESULT_JOB_ID, source, path.basename(target))
+  } else {
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL)
+  }
   updateStage(uploadRoot, platformName, 'downloaded')
   return target
 }

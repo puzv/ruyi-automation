@@ -5,6 +5,7 @@ const jobs = require('@ruyi/shared/runtime/repos/jobs')
 const { loadUserState } = require('@ruyi/shared/runtime/platform-state/index')
 const { ensureWorkspace, resolveWorkspace } = require('@ruyi/shared/runtime/workspace')
 const { executeTask } = require('./execution')
+const { beginResults, finishResults } = require('@ruyi/shared/runtime/job-results')
 
 const { scripts } = require('@ruyi/shared/tasks')
 const failed = (errorMessage) => ({ status: 'failed', exitCode: null, exitSignal: null,
@@ -29,11 +30,16 @@ async function runJob({ job, db, keys, log, dataRoot, signal, scriptPaths = scri
     if (!await jobs.setLogPath(db, { id: job.id, claimToken: job.claim_token, logPath })) {
       return failed('任务已被回收')
     }
+    const resultJob = job.task === 'download'
+    if (resultJob) beginResults(workspace, job.id)
     const execution = executeTask({ id: job.id, script: scriptPaths[job.task], user, uploadDir: workspace,
-      headless: Boolean(job.headless), platformState, db, keys, log, signal, spawnImpl, env,
+      headless: Boolean(job.headless), platformState, db, keys, log, signal, spawnImpl,
+      env: { ...env, RUYI_RESULT_JOB_ID: resultJob ? job.id : '' },
       onOutput(data) { fs.writeSync(fd, data) },
     })
-    return await execution.completion
+    const outcome = await execution.completion
+    if (resultJob && outcome.status === 'succeeded') finishResults(workspace, job.id)
+    return outcome
   } catch (_) {
     log?.error('任务执行失败，请查看任务状态')
     return failed('任务执行失败，请联系管理员')

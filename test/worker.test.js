@@ -79,7 +79,7 @@ async function main() {
   const log = { info(message) { serviceLogs.push(message) }, error(message) { serviceLogs.push(message) } }
   let worker, app, child, orphanPid, orphanDir
   const workerOptions = { db, keys, log, dataRoot, pollMs: 25, maxConcurrent: 2,
-    runner: (options) => runJob({ ...options, scriptPaths: { upload: fixture },
+    runner: (options) => runJob({ ...options, scriptPaths: { upload: fixture, download: fixture },
       env: { FAKE_JOB_MODE: modes.get(options.job.id) || 'ok', FAKE_JOB_DELAY: String(delays.get(options.job.id) || 20) },
       spawnImpl(command, args, options) {
         stateDirs.push(path.dirname(options.env.RUYI_STATE_FILE))
@@ -106,8 +106,8 @@ async function main() {
     app = buildApp({ db, stateKeys: keys, uploadRoot: dataRoot, logger: false })
     const request = (user, method, url, payload) => app.inject({ method, url, headers: { cookie: user.cookie },
       ...(payload === undefined ? {} : { payload }) })
-    const enqueue = async (user = a, mode = 'ok', delay = 20) => {
-      const response = await request(user, 'POST', '/api/run/upload')
+    const enqueue = async (user = a, mode = 'ok', delay = 20, task = 'upload') => {
+      const response = await request(user, 'POST', `/api/run/${task}`)
       assert.equal(response.statusCode, 200, response.body)
       const result = response.json()
       assert.equal(result.status, 'queued'); assert.ok(result.position >= 1)
@@ -196,6 +196,39 @@ async function main() {
     assert.equal((await request(a, 'POST', `/api/jobs/${id}/cancel`)).json().result, 'finished')
     fs.unlinkSync(logPath(success))
     assert.equal((await readOutput(id)).output, '')
+
+    await reset()
+    const resultId = await enqueue(a, 'result', 100, 'download')
+    assert.equal((await app.inject({ url: `/api/jobs/${resultId}/results.zip` })).statusCode, 401)
+    assert.equal((await request(a, 'GET', `/api/jobs/${resultId}/results.zip`)).statusCode, 409)
+    await startWorker()
+    await waitStatus(resultId, 'succeeded')
+    assert.equal((await request(a, 'GET', `/api/jobs/${resultId}/results`)).json().count, 1)
+    const zipResult = await request(a, 'GET', `/api/jobs/${resultId}/results.zip`)
+    assert.equal(zipResult.statusCode, 200)
+    assert.equal(zipResult.rawPayload.readUInt32LE(0), 0x04034b50)
+    assert.equal(Number(zipResult.headers['content-length']), zipResult.rawPayload.length)
+    assert.match(zipResult.headers['content-disposition'], /attachment/)
+    for (const other of [b, admin]) {
+      assert.equal((await request(other, 'GET', `/api/jobs/${resultId}/results.zip`)).statusCode, 404)
+    }
+    const failResult = await enqueue(a, 'result-fail', 20, 'download')
+    await waitStatus(failResult, 'failed')
+    assert.equal((await request(a, 'GET', `/api/jobs/${failResult}/results.zip`)).statusCode, 409)
+    const emptyResult = await enqueue(a, 'ok', 20, 'download')
+    await waitStatus(emptyResult, 'succeeded')
+    assert.equal((await request(a, 'GET', `/api/jobs/${emptyResult}/results`)).statusCode, 409)
+    assert.equal((await request(a, 'GET', `/api/jobs/${resultId}/results`)).json().count, 1, '后续任务不能改变旧归档')
+    const archive = path.join(resolveWorkspace(a, dataRoot), 'job-results', resultId)
+    fs.renameSync(archive, `${archive}.test-saved`)
+    const oldResult = await request(a, 'GET', `/api/jobs/${resultId}/results`)
+    assert.equal(oldResult.statusCode, 409)
+    assert.match(oldResult.json().message, /旧任务不支持/)
+    fs.renameSync(`${archive}.test-saved`, archive)
+    await stopWorker()
+    const cancelledResult = await enqueue(a, 'ok', 20, 'download')
+    await request(a, 'POST', `/api/jobs/${cancelledResult}/cancel`)
+    assert.equal((await request(a, 'GET', `/api/jobs/${cancelledResult}/results.zip`)).statusCode, 409)
 
     await reset()
     const serial = []

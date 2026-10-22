@@ -146,6 +146,40 @@ try {
   assert.throws(() => m.resolveDownloadTarget(root, 'missing_pn_1234abcd_1', 'x.xlsx'), /找不到平台名称/);
   assert.equal(path.basename(m.resolveDownloadTarget(root, '旧数据_pn.txt', '平台结果.xlsx')), '平台结果.xlsx');
 
+  const { beginResults } = require('@ruyi/shared/runtime/job-results');
+  const resultJob = '11111111-1111-1111-1111-111111111111';
+  const nextResultJob = '22222222-2222-2222-2222-222222222222';
+  const isolated = workspace('isolated-results');
+  input(isolated, 'raw/学生_idfa.txt');
+  m.prepareUpload(isolated, options);
+  const isolatedRecord = m.readManifest(isolated).files[0];
+  const previousResultJob = process.env.RUYI_RESULT_JOB_ID;
+  try {
+    for (const job of [resultJob, nextResultJob]) {
+      beginResults(isolated, job);
+      process.env.RUYI_RESULT_JOB_ID = job;
+      const target = m.saveDownloadedFile(isolated, isolatedRecord.platformName, '实际.xlsx', source);
+      assert.equal(target, path.join(isolated, 'job-results', job, 'files', '学生_idfa.xlsx'));
+      assert.deepEqual(fs.readdirSync(path.dirname(target)), ['学生_idfa.xlsx']);
+      assert.equal(fs.existsSync(path.join(isolated, 'result')), false);
+      assert.throws(() => m.saveDownloadedFile(isolated, isolatedRecord.platformName, '实际.xlsx', source), /重名|已存在/);
+    }
+    const failedJob = '33333333-3333-3333-3333-333333333333';
+    beginResults(isolated, failedJob);
+    process.env.RUYI_RESULT_JOB_ID = failedJob;
+    m.updateStage(isolated, isolatedRecord.platformName, 'analysed');
+    const rename = fs.renameSync;
+    fs.renameSync = () => { throw new Error('模拟归档失败'); };
+    try { assert.throws(() => m.saveDownloadedFile(isolated, isolatedRecord.platformName, '实际.xlsx', source), /模拟归档失败/); }
+    finally { fs.renameSync = rename; }
+    assert.equal(m.readManifest(isolated).files[0].stage, 'analysed');
+    assert.deepEqual(fs.readdirSync(path.join(isolated, 'job-results', failedJob, 'files')), []);
+    m.saveDownloadedFile(isolated, isolatedRecord.platformName, '实际.xlsx', source);
+  } finally {
+    if (previousResultJob === undefined) delete process.env.RUYI_RESULT_JOB_ID;
+    else process.env.RUYI_RESULT_JOB_ID = previousResultJob;
+  }
+
   const legacy = workspace('legacy');
   input(legacy, 'raw/oldoccupation_pn.txt');
   assert.equal(m.planUpload(legacy, { username: '', jobId: '' }).named, false);

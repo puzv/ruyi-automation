@@ -41,6 +41,7 @@ function mount(relative, labels, names, api, props = {}) {
       clearTimeout(id) { timers.delete(id); },
       confirm() { confirms++; return confirmResult; },
     }, apiFetch,
+    async observeResultJob() { return ''; }, async downloadJobResults() { return '已发起 ZIP 下载'; }, resetResultDownloads() {},
     async requestJson(url, options) {
       const response = await apiFetch(url, options);
       const data = await response.json();

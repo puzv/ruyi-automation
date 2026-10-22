@@ -1,6 +1,7 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { apiFetch } from './api.js'
+import { resetResultDownloads } from './result-download.js'
 import WorkbenchView from './views/WorkbenchView.vue'
 import PlatformLoginView from './views/PlatformLoginView.vue'
 import LoginView from './views/LoginView.vue'
@@ -27,6 +28,7 @@ function syncPage() {
   if (location.hash !== `#${next}`) location.hash = `#${next}`
 }
 function loggedOut() {
+  resetResultDownloads()
   currentUser.value = null
   error.value = ''
 }
@@ -37,6 +39,7 @@ function requirePasswordChange() {
   }
 }
 function loggedIn(user) {
+  resetResultDownloads()
   currentUser.value = user
   location.hash = user.mustChangePassword ? '#/password' : '#/'
   syncPage()

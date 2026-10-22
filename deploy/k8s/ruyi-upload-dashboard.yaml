@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ruyi-upload
+  namespace: b2d-bsgdw
+  labels:
+    app: ruyi-upload
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ruyi-upload
+  template:
+    metadata:
+      labels:
+        app: ruyi-upload
+    spec:
+      securityContext:
+        fsGroup: 1001
+      nodeSelector:
+        beta.kubernetes.io/arch: amd64
+      imagePullSecrets:
+        - name: b2d
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: app
+          image: harbor.ge.cn/b2d/common/ruyi-upload:stage6-local-20261020
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 5173
+          envFrom:
+            - secretRef:
+                name: ruyi-upload-config
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: RUYI_LOGIN_DISPLAY
+              value: vnc
+            - name: DISPLAY
+              value: ":99"
+            - name: RUYI_UPLOAD_DIR
+              value: /data/upload
+            - name: RUYI_HEADLESS
+              value: "1"
+            - name: RUYI_MAX_CONCURRENT_JOBS
+              value: "2"
+            # 首次只检查服务与登录页，确认后再开启任务认领。
+            - name: RUYI_WORKER
+              value: "off"
+          volumeMounts:
+            - name: upload-data
+              mountPath: /data/upload
+            - name: shared-memory
+              mountPath: /dev/shm
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+      volumes:
+        - name: upload-data
+          persistentVolumeClaim:
+            claimName: ruyi-upload-data
+        - name: shared-memory
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi

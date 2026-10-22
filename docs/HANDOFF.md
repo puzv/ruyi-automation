@@ -59,11 +59,11 @@
 3. 验收中发现的问题按“任务说明 → 子代理修复 → 审查”流程处理。
 
 ### B. 阶段 6：K8s 部署（主要剩余开发工作）
-部署仓库在 `~/playwright-upload-deploy`（独立目录，**尚无任何 git 提交**；`k8s/` 下仍是最初的模板，与线上实际不一致）。线上目前运行旧镜像 `harbor.ge.cn/b2d/common/ruyi-upload:desktop-39c1a12`，namespace `b2d-bsgdw`，PVC `ruyi-upload-data`（nfs-client，10Gi），NodePort 暴露 5173（应用）和 6080（无密码桌面）。部署方式是负责人在 Kubernetes Dashboard 粘贴 YAML（本机没有 kubectl 集群配置）。
+部署配置现位于主仓库 `deploy/`（`k8s/` 下仍是最初的模板，与线上实际不一致）。线上目前运行旧镜像 `harbor.ge.cn/b2d/common/ruyi-upload:desktop-39c1a12`，namespace `b2d-bsgdw`，PVC `ruyi-upload-data`（nfs-client，10Gi），NodePort 暴露 5173（应用）和 6080（无密码桌面）。部署方式是负责人在 Kubernetes Dashboard 粘贴 YAML（本机没有 kubectl 集群配置）。
 
 需要做的：
 1. **Dockerfile**：基于新代码重建。启动命令改为 `npm start`（不再用 `npm --prefix web run dev`）；构建时执行 `npm run build:web`；镜像中包含 Xvfb、openbox、x11vnc（只监听 `127.0.0.1:5900`），**不再需要 websockify/noVNC 服务端和 6080 端口**（远程桌面由后端鉴权 WebSocket 转发，见 `server/platform-login/vnc-proxy.js`）。
-2. **启动脚本**：启动 Xvfb `:99` + openbox + x11vnc（`-localhost -rfbport 5900 -forever -shared`，可加 `-nopw`，因为只监听本机且入口有鉴权）+ `npm start`；设置 `RUYI_LOGIN_DISPLAY=vnc`、`DISPLAY=:99`。参考现有 `scripts/start-desktop.sh`。
+2. **启动脚本**：启动 Xvfb `:99` + openbox + x11vnc（`-localhost -rfbport 5900 -forever -shared`，可加 `-nopw`，因为只监听本机且入口有鉴权）+ `npm start`；设置 `RUYI_LOGIN_DISPLAY=vnc`、`DISPLAY=:99`。参考现有 `deploy/scripts/start-desktop.sh`。
 3. **Secret**：数据库连接（`RUYI_DB_*`）与 `RUYI_STATE_KEY` 放入 K8s Secret，以环境变量注入。**`RUYI_STATE_KEY` 必须与负责人本地 `.env` 中的一致**，否则本地登录的平台登录态在线上无法解密（也可以接受线上重新扫码）。
 4. **存储**：用户工作区 `RUYI_UPLOAD_DIR` 指向 PVC（例如 `/data/upload`）；不再需要 `/data/profile`（emptyDir 可删）。
 5. **Service**：删除桌面 NodePort（6080）；应用入口仍为 5173。若平台同事能提供 Ingress + HTTPS，设置 `RUYI_COOKIE_SECURE=1`。
@@ -71,7 +71,7 @@
 7. **更新策略**：保持 `Recreate`、单副本（Worker 内嵌）。如需拆分，API 设 `RUYI_WORKER=off`，另起 Worker Deployment 运行 `npm run worker`（两者共享 PVC，需 ReadWriteMany）。
 8. **迁移旧数据**：线上 PVC 中旧的 `/data/upload` 数据若需要保留，用 `scripts/migrate-user-workspace.js` 复制到某个用户名下（先 dry-run）。
 9. **验证项**（阶段 4 中未能实测）：Xvfb + x11vnc + 后端 WebSocket 转发 + 网页 noVNC 组件的完整链路；远程桌面同时只允许 1 人登录。
-10. 把实际生效的 K8s YAML、Dockerfile 提交到部署仓库，并更新其 README。
+10. 把实际生效的 K8s YAML、Dockerfile 保存在主仓库 `deploy/` 并更新其中 README；当前阶段尚未完成线上 K8s 更新。
 
 ### C. 推迟的工作（负责人尚未要求）
 - **5B 流水线入表**：把 `createGroupToDoList.json`、`analyseToDoList.json`、`done.json`、`file-manifest.json` 改为数据库表；等开始做“分析下载结果文件”功能时再做。

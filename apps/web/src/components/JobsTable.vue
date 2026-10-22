@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { requestJson } from '../api.js'
+import { observeResultJob, downloadJobResults } from '../result-download.js'
 import { formatTime, isActiveJob, jobDuration, jobStatusLabels, taskLabels } from '../labels.js'
 
 const props = defineProps({ admin: Boolean })
@@ -12,6 +13,8 @@ const total = ref(0)
 const loading = ref(false)
 const error = ref('')
 const cancelling = ref({})
+const downloading = ref({})
+const downloadNotice = ref('')
 const now = ref(Date.now())
 const pages = computed(() => Math.max(1, Math.ceil(total.value / 20)))
 let timer
@@ -33,6 +36,11 @@ async function load(nextPage = 1, search = false) {
     const data = await requestJson(`${props.admin ? '/api/admin/jobs' : '/api/jobs'}?${query}`)
     if (disposed) return
     items.value = data.items; total.value = data.total; page.value = data.page
+    if (!props.admin) for (const item of data.items) {
+      observeResultJob(item).then((message) => {
+        if (!disposed && message) downloadNotice.value = message
+      }).catch((failure) => { if (!disposed) error.value = `ZIP 下载未发起：${failure.message}` })
+    }
     now.value = Date.now()
     appliedFilters = selected
   } catch (failure) {
@@ -41,6 +49,16 @@ async function load(nextPage = 1, search = false) {
     loading.value = false
     scheduleRefresh()
   }
+}
+async function redownload(job) {
+  if (props.admin || downloading.value[job.id]) return
+  downloading.value[job.id] = true
+  error.value = ''
+  try {
+    const message = await downloadJobResults(job)
+    if (!disposed) downloadNotice.value = message
+  } catch (failure) { if (!disposed) error.value = failure.message || '下载结果失败，请重试' }
+  finally { downloading.value[job.id] = false }
 }
 async function cancelJob(job) {
   if (props.admin || !isActiveJob(job) || cancelling.value[job.id] || job.cancelRequested) return
@@ -71,6 +89,7 @@ onBeforeUnmount(() => { disposed = true; window.clearTimeout(timer) })
   </form>
   <div class="job-toolbar"><button class="secondary-button" :disabled="loading" @click="load(page)">刷新</button></div>
   <p v-if="error" class="form-error" role="alert">{{ error }}</p>
+  <p v-if="downloadNotice" role="status">{{ downloadNotice }}</p>
   <div class="table-scroll">
     <table class="data-table">
       <thead><tr><th>提交时间</th><th v-if="admin">用户</th><th>任务</th><th>状态</th><th>开始时间</th><th>耗时</th><th>说明</th><th>操作</th></tr></thead>
@@ -83,7 +102,7 @@ onBeforeUnmount(() => { disposed = true; window.clearTimeout(timer) })
           <td class="nowrap">{{ formatTime(item.startedAt) }}</td>
           <td class="nowrap">{{ jobDuration(item, now) }}</td>
           <td class="log-description">{{ item.errorMessage || '—' }}<span v-if="isActiveJob(item) && item.cancelRequested"> 正在停止任务…</span></td>
-          <td><div class="row-actions"><a class="secondary-button job-log-link" :href="`/api/jobs/${encodeURIComponent(item.id)}/log`" target="_blank" rel="noopener noreferrer">查看日志</a><button v-if="!admin && isActiveJob(item)" class="secondary-button" :disabled="loading || cancelling[item.id] || item.cancelRequested" @click="cancelJob(item)">取消</button></div></td>
+          <td><div class="row-actions"><a class="secondary-button job-log-link" :href="`/api/jobs/${encodeURIComponent(item.id)}/log`" target="_blank" rel="noopener noreferrer">查看日志</a><button v-if="!admin && item.task === 'download' && item.status === 'succeeded'" class="secondary-button" :disabled="downloading[item.id]" @click="redownload(item)">重新下载</button><button v-if="!admin && isActiveJob(item)" class="secondary-button" :disabled="loading || cancelling[item.id] || item.cancelRequested" @click="cancelJob(item)">取消</button></div></td>
         </tr>
         <tr v-if="!items.length"><td class="empty-state" :colspan="admin ? 8 : 7">{{ loading ? '正在加载…' : '暂无任务' }}</td></tr>
       </tbody>

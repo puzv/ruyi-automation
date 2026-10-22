@@ -138,6 +138,7 @@ async function testWorkbench() {
   let status = 'none';
   let required = true;
   const sandbox = { ...vue, ...await import('../apps/web/src/labels.js'), ...Object.fromEntries(icons.map((name) => [name, {}])),
+    async observeResultJob() { return ''; }, async downloadJobResults() { return ''; },
     onMounted() {}, onBeforeUnmount() {}, window: { clearTimeout() {} }, defineProps: () => ({ currentUser: { id: 7 }, page: '/' }), defineEmits() {}, defineExpose() {},
     async apiFetch(url) {
       calls.push(url);
