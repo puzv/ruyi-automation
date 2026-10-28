@@ -9,6 +9,7 @@ const { readJsonArray, writeJsonArray } = require("./lib/files");
 const { launchBrowser, closeBrowserContext } = require("./lib/browser");
 const { checkPreflight } = require("./lib/preflight");
 const { requireMapping, saveDownloadedFile } = require("./lib/file-manifest");
+const { TASK_OUTCOME } = require("@ruyi/shared/runtime/task-outcome");
 
 function resolveDoneTask() {
   const uploadRoot = requireUploadRoot();
@@ -28,9 +29,18 @@ function removeDoneFile(donePath, fileName) {
 
 function normalizeTaskName(value) {
   return path.basename(String(value || ""))
-    .replace(/\.(?:txt|csv)$/i, "")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
     .replace(/\s+/g, " ")
+    .trim()
+    .normalize("NFC")
+    .replace(/\.(?:txt|csv)$/i, "")
     .trim();
+}
+
+function sameTaskTitle(left, right) {
+  const a = normalizeTaskName(left);
+  const b = normalizeTaskName(right);
+  return Boolean(a && b && a === b);
 }
 
 function getExpectedTitles(fileName, selectedTitle) {
@@ -157,9 +167,22 @@ async function selectTask(page, fileName) {
   // inspecting status dots (the response can precede DOM reconciliation).
   await page.waitForTimeout(250);
   const found = await page.waitForFunction(({ requestedName, stemName }) => {
-    const titles = [...document.querySelectorAll(".listItem--G0aPY .title--cpoFh")]
-      .map((node) => node.innerText.trim());
-    return titles.some((title) => title === requestedName || title === stemName);
+    const normalize = (value) => String(value || "")
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .normalize("NFC")
+      .replace(/\.(?:txt|csv)$/i, "")
+      .trim();
+    const expected = normalize(requestedName) || normalize(stemName);
+    return [...document.querySelectorAll("body *")].some((node) => {
+      if (["INPUT", "TEXTAREA", "SCRIPT", "STYLE"].includes(node.tagName)) return false;
+      const style = getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      if (style.display === "none" || style.visibility === "hidden" || rect.width <= 0 || rect.height <= 0) return false;
+      if (normalize(node.innerText || node.textContent) !== expected) return false;
+      return ![...node.children].some((child) => normalize(child.innerText || child.textContent) === expected);
+    });
   }, { requestedName: requested, stemName: stem }, { timeout: 15000 }).catch(() => false);
   if (!found) throw new Error(`分析任务列表中找不到：${requested}`);
 
@@ -168,7 +191,7 @@ async function selectTask(page, fileName) {
   for (let i = 0; i < await items.count(); i += 1) {
     const card = items.nth(i);
     const title = (await card.locator(".title--cpoFh").innerText()).trim();
-    if (title !== requested && title !== stem) continue;
+    if (!sameTaskTitle(title, requested) && !sameTaskTitle(title, stem)) continue;
     // Search results are sorted by lastModifiedTime descending. Duplicate
     // names can therefore include an older SUCCESS record and a newer queued
     // record; keep the newest card so we do not download stale data.
@@ -179,10 +202,53 @@ async function selectTask(page, fileName) {
     await card.click();
     await page.waitForFunction((expected) => {
       const active = document.querySelector(".listItem--G0aPY.active--okDqb .title--cpoFh");
-      return active && active.innerText.trim() === expected;
+      if (!active) return false;
+      const normalize = (value) => String(value || "")
+        .replace(/[\u200B-\u200D\uFEFF]/g, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .normalize("NFC")
+        .replace(/\.(?:txt|csv)$/i, "")
+        .trim();
+      return normalize(active.innerText) === normalize(expected);
     }, title, { timeout: 30000 });
     console.log(`已选择分析任务：${title}`);
     return title;
+  }
+
+  // The platform periodically changes generated list/card class names. Mark
+  // the exact visible title and click its nearest list item as a fallback.
+  const marked = await page.evaluate((expectedName) => {
+    const normalize = (value) => String(value || "")
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .normalize("NFC")
+      .replace(/\.(?:txt|csv)$/i, "")
+      .trim();
+    const expected = normalize(expectedName);
+    const visible = (node) => {
+      const style = getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+    };
+    const title = [...document.querySelectorAll("body *")].find((node) => {
+      if (!visible(node) || ["INPUT", "TEXTAREA", "SCRIPT", "STYLE"].includes(node.tagName)) return false;
+      if (normalize(node.innerText || node.textContent) !== expected) return false;
+      return ![...node.children].some((child) => normalize(child.innerText || child.textContent) === expected);
+    });
+    if (!title) return false;
+    const card = title.closest('[class*="listItem"], [class*="list-item"], [role="listitem"]') || title;
+    card.setAttribute("data-ruyi-task-target", "1");
+    return true;
+  }, stem);
+  if (marked) {
+    const target = page.locator('[data-ruyi-task-target="1"]').first();
+    await target.click();
+    await target.evaluate((element) => element.removeAttribute("data-ruyi-task-target")).catch(() => {});
+    await page.waitForTimeout(500);
+    console.log(`已选择分析任务：${stem}（兼容平台页面结构）`);
+    return stem;
   }
   throw new Error(`分析任务列表中找不到：${requested}`);
 }
@@ -335,7 +401,8 @@ async function main() {
 if (require.main === module) {
   main().catch((error) => {
     console.error(`下载任务失败：${error.message}`);
-    process.exitCode = /下载未成功|下载未就绪|排队中|计算中|处理中|生成中|不可用/.test(error.message) ? 2 : 1;
+    process.exitCode = /下载未就绪|排队中|计算中|处理中|生成中|不可用/.test(error.message)
+      ? TASK_OUTCOME.NOT_READY : TASK_OUTCOME.FAILURE;
   });
 }
 
@@ -347,5 +414,6 @@ module.exports = {
   getExpectedTitles,
   markDownloadTarget,
   normalizeTaskName,
+  sameTaskTitle,
   selectTask,
 };
