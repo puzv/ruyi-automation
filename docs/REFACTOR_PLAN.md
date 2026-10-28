@@ -128,3 +128,10 @@
   - [x] 7.0 只读迁移设计与依赖边界确认
   - [x] 7.1 应用 workspace 迁移、结构回归及当前目录文档适配（npm test 和登录态/Worker/审计数据库专项通过）
   - [x] 7.2 `deploy/` 构建适配新旧布局（离线验证完成；真实镜像构建与线上发布另行验收）
+  - [x] 7.5 自动推进（服务端轮询平台并在就绪后提交后续任务，到洞悉结果就绪停止）
+    - 迁移 006 `ruyi_auto_advance` 已在本地 `ruyi_dev`/`ruyi_test` 执行，**`bsg_dw` 未执行**
+    - `test/auto-advance.test.js`（15 用例，无需数据库/浏览器）已接入 `npm test`
+    - `test/auto-advance-repo.test.js` 已接入 `npm run test:all`
+    - 轮询间隔默认 5 分钟（`DEFAULT_INTERVAL_MS = 5 * 60 * 1000`），下限 15000，可用 `RUYI_AUTO_ADVANCE_INTERVAL_MS` 覆盖
+    - 设计、接口与环境变量见 `docs/tasks/7.5-auto-advance.md`
+    - 上线前需在 `bsg_dw` 执行迁移 006；运行时可按需设 `RUYI_AUTO_ADVANCE=off`

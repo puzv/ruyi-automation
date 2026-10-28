@@ -73,6 +73,11 @@
 9. **验证项**（阶段 4 中未能实测）：Xvfb + x11vnc + 后端 WebSocket 转发 + 网页 noVNC 组件的完整链路；远程桌面同时只允许 1 人登录。
 10. 把实际生效的 K8s YAML、Dockerfile 保存在主仓库 `deploy/` 并更新其中 README；当前阶段尚未完成线上 K8s 更新。
 
+**镜像已就绪并已推送（2026-10-22）**：`harbor.ge.cn/b2d/common/ruyi-upload:auto-advance-20261022`（3.85GB，digest `sha256:cd7ab93bb6257726117160d4428ec38a4b263df17e0eac0d056a4d4a27f30ab7`，`linux/amd64`），包含 7.5 自动推进与 7.3 下载修复。按上述第 1–2 项用 `Dockerfile.workspace` + `deploy/scripts/start-desktop.sh` 构建，`npm start` 启动，`RUYI_LOGIN_DISPLAY=vnc`，未暴露 6080。
+构建命令（`deploy/` 下）：`bash scripts/build-image.sh .. --worktree harbor.ge.cn/b2d/common/ruyi-upload:<tag> --push`；省略 `--push` 则只本地构建。
+已验证：镜像内无 `.env`/登录态/用户数据；容器实跑 Xvfb + openbox + x11vnc + Node 正常，`/api/health` 200、前端资源 200、未登录 `/api/status` 401；headless 与 headed Chromium 均可启动；`docker pull` 回读 digest 一致。
+**仍待办**：`deploy/k8s/` 未适配新布局，不能直接应用；线上仍是旧镜像 `desktop-39c1a12`，需按第 3–8 项准备 Secret/存储/资源再切换。迁移 006 已于 2026-10-22T08:51:57Z 在 `bsg_dw` 执行完成（新增 `ruyi_auto_advance`，前后结构快照对比确认其余 55 张表无变化）。
+
 ### C. 推迟的工作（负责人尚未要求）
 - **5B 流水线入表**：把 `createGroupToDoList.json`、`analyseToDoList.json`、`done.json`、`file-manifest.json` 改为数据库表；等开始做“分析下载结果文件”功能时再做。
 - **文件分析功能**：负责人最初提到的需求，尚未设计。

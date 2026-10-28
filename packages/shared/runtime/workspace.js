@@ -105,6 +105,18 @@ function readFirstTaskCount(fileNames, workspace = uploadRoot) {
   return existing ? readTaskCount(existing, workspace) : 0
 }
 
+function readPendingAnalyseItems(workspace = uploadRoot) {
+  const items = readTaskItems(['analyseToDoList.json'], workspace)
+  const done = new Set(readTaskItems(['done.json'], workspace).map(withoutExtension))
+  const seen = new Set()
+  return items.filter((item) => {
+    const normalized = withoutExtension(item)
+    if (!normalized || done.has(normalized) || seen.has(normalized)) return false
+    seen.add(normalized)
+    return true
+  })
+}
+
 function countPendingFiles(folder, type, recursive) {
   const entry = statEntry(folder)
   if (!entry?.isDirectory() || entry.isSymbolicLink()) return 0
@@ -134,12 +146,14 @@ function getWorkspaceStatus(workspace = uploadRoot) {
   }, 0)
   const createNames = readTaskItems(['createGroupToDoList.json', 'creategrouptodolist.json'], workspace)
   const createCount = readFirstTaskCount(['createGroupToDoList.json', 'creategrouptodolist.json'], workspace)
-  const analyseCount = readTaskCount('analyseToDoList.json', workspace)
+  // 分析脚本会跳过已经写入 done.json 的项目。状态统计必须使用同一规则，
+  // 否则自动推进会把“空跑成功”的任务当成真实洞悉任务。
+  const analyseCount = readPendingAnalyseItems(workspace).length
   const doneCount = readTaskCount('done.json', workspace)
   const workspaceStatus = createCount > 0 ? '等待创建人群包' : analyseCount > 0 ? '等待洞悉人群包' : doneCount > 0 ? '等待下载' : '等待操作'
   return { workspaceStatus, rawCount: pendingUploadCount, createCount, createNames, analyseCount, doneCount }
 }
 
-function withoutExtension(name) { return path.basename(name).replace(/\.[^.]+$/, '') }
+function withoutExtension(name) { return path.basename(String(name)).replace(/\.[^.]+$/, '') }
 
-module.exports = { decodeUploadedFileName, resolveWorkspace, ensureWorkspace, readTaskCount, readTaskItems, readFirstTaskCount, getWorkspaceStatus, withoutExtension }
+module.exports = { decodeUploadedFileName, resolveWorkspace, ensureWorkspace, readTaskCount, readTaskItems, readFirstTaskCount, readPendingAnalyseItems, getWorkspaceStatus, withoutExtension }

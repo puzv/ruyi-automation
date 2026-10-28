@@ -2,7 +2,11 @@ const { launchBrowser, closeBrowserContext } = require('@ruyi/automation/lib/bro
 const { withoutExtension } = require('@ruyi/shared/runtime/workspace')
 const state = require('../../state')
 
-function launchPlatformBrowser(storageState) { return launchBrowser({ headless: state.headlessMode, ...(storageState ? { storageState } : {}) }) }
+function launchPlatformBrowser(storageState, options = {}) {
+  // 自动推进在后台运行，不能跟着用户的“调试模式”开关弹出窗口。
+  const headless = options.headless ?? state.headlessMode
+  return launchBrowser({ headless, ...(storageState ? { storageState } : {}) })
+}
 
 function trackContext(context) {
   state.activeContexts.add(context)
@@ -12,13 +16,67 @@ function trackContext(context) {
   return context
 }
 
-async function inspectPlatformFiles(type, names, storageState) {
+// 人群列表里还没出现的目标必须算未就绪。刚提交的人群包有一段延迟才进列表，
+// 如果只统计 PROCESSING 会得到 0，导致过早提交人群洞悉。
+function normalizeAudienceName(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim()
+}
+
+function normalizeAudienceStatus(value) {
+  return String(value || '').trim().toUpperCase()
+}
+
+function isAudienceNameMatch(itemName, target) {
+  if (itemName === target) return true
+  const index = itemName.indexOf(target)
+  if (index < 0) return false
+  const before = itemName[index - 1]
+  const after = itemName[index + target.length]
+  // 仅允许目标位于名称边界，避免 `_1` 命中 `_10` 或 `_11`。
+  // 下划线是平台常用的前后缀分隔符，不能阻断兼容匹配。
+  return (!before || !/[A-Za-z0-9]/.test(before))
+    && (!after || !/[A-Za-z0-9]/.test(after))
+}
+
+function countPendingAudiences(targets, items, found, foundUnavailable) {
+  let matchedOnPage = 0
+  for (const item of items) {
+    const name = normalizeAudienceName(item.name)
+    // 精确名称优先；兼容平台追加前后缀时取最长候选，避免短编号抢占长编号。
+    const matched = targets.find((target) => name === target)
+      || targets.filter((target) => isAudienceNameMatch(name, target))
+        .sort((left, right) => right.length - left.length)[0]
+    if (!matched) continue
+    matchedOnPage += 1
+    found.add(matched)
+    const frontStatus = normalizeAudienceStatus(item.frontStatus)
+    const status = normalizeAudienceStatus(item.status)
+    if (status === 'PROCESSING' || frontStatus === 'PROCESSING') foundUnavailable.add(matched)
+  }
+  return matchedOnPage
+}
+
+function countPendingAudiencesTotal(targets, found, foundUnavailable) {
+  const missing = targets.filter((target) => !found.has(target))
+  return { pending: foundUnavailable.size + missing.length, missing }
+}
+
+// 洞悉结果同理：列表里查不到记录时 latest 是 undefined，
+// 既不能算完成，也不能因为 status 为空就跳过。
+function pendingInsightResult(latest) {
+  if (!latest) return true
+  const status = String(latest.status || '').toUpperCase()
+  if (!status) return true
+  return status !== 'SUCCESS'
+}
+
+async function inspectPlatformFiles(type, names, storageState, options = {}) {
   const url = type === 'pn'
     ? (process.env.RUYI_URL_PN_UPLOAD || 'https://ruyi.qq.com/audience/dnUpload?idType=MD5_MOBILE_PHONE')
     : type === 'idfa'
     ? 'https://ruyi.qq.com/audience/dnUpload?idType=MD5_IFA'
     : 'https://ruyi.qq.com/audience/dnUpload?idType=MD5_OAID'
-  const context = trackContext(await launchPlatformBrowser(storageState))
+  const context = trackContext(await launchPlatformBrowser(storageState, options))
   try {
     const page = context.pages()[0] || await context.newPage()
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 })
@@ -48,45 +106,61 @@ async function inspectPlatformFiles(type, names, storageState) {
   }
 }
 
-async function inspectAnalyseAudience(names, storageState) {
-  const context = trackContext(await launchPlatformBrowser(storageState))
+// 该函数由 Playwright 序列化到页面执行，不能依赖模块闭包。
+async function requestPlatformListing({ url, payload, label }, requestFetch = fetch) {
+  const response = await requestFetch(url, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+  })
+  if (!response.ok) throw new Error(`${label}接口返回 HTTP ${response.status}`)
+  let body
+  try { body = await response.json() } catch (_) { throw new Error(`${label}接口返回的 JSON 无效`) }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error(`${label}接口响应格式无效`)
+  if (body.success === false || (body.code != null && body.code !== 0)) {
+    throw new Error(`${label}接口失败：${body.message || `code=${body.code}`}`)
+  }
+  if (body.success !== true && body.code !== 0) throw new Error(`${label}接口缺少成功标记`)
+  const listing = body.data?.listing
+  if (!listing || !Array.isArray(listing.items)
+    || listing.items.some((item) => !item || typeof item !== 'object' || Array.isArray(item))) {
+    throw new Error(`${label}接口列表格式无效`)
+  }
+  return listing
+}
+
+async function inspectAudiencePages(names, loadPage) {
+  const targets = [...new Set(names.map((name) => withoutExtension(name).replace(/\s+/g, ' ').trim()).filter(Boolean))]
+  const found = new Set()
+  const unavailable = new Set()
+  for (let pageNumber = 1; targets.length && pageNumber <= 200; pageNumber += 1) {
+    const listing = await loadPage(pageNumber)
+    if (!listing.items.length) break
+    countPendingAudiences(targets, listing.items, found, unavailable)
+    if (found.size === targets.length) break
+    const total = Number(listing.total)
+    if (listing.total != null && Number.isFinite(total) && total >= 0 && pageNumber * 20 >= total) break
+  }
+  return countPendingAudiencesTotal(targets, found, unavailable)
+}
+
+async function inspectAnalyseAudience(names, storageState, options = {}) {
+  const context = trackContext(await launchPlatformBrowser(storageState, options))
   try {
     const page = context.pages()[0] || await context.newPage()
     await page.goto('https://ruyi.qq.com/audience', { waitUntil: 'domcontentloaded', timeout: 60000 })
     if (!page.url().startsWith('https://ruyi.qq.com/audience')) throw new Error('人群列表页面需要登录或未打开成功')
-    const targets = new Set(names.map((name) => withoutExtension(name).replace(/\s+/g, ' ').trim()))
-    const foundUnavailable = new Set()
-    let emptyPages = 0
-    for (let pageNumber = 1; pageNumber <= 200 && emptyPages < 3; pageNumber += 1) {
-      const payload = await page.evaluate(async (pageNumber) => {
-        const response = await fetch('/api/audience/list', {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ page: pageNumber, pageSize: 20 }),
-        })
-        return response.json()
-      }, pageNumber)
-      const items = payload?.data?.listing?.items || []
-      if (!items.length) break
-      let matchedOnPage = 0
-      for (const item of items) {
-        const name = String(item.name || '').replace(/\s+/g, ' ').trim()
-        const matched = [...targets].find((target) => name === target)
-        if (matched) {
-          matchedOnPage += 1
-          if (item.status === 'PROCESSING' || item.frontStatus === 'PROCESSING') foundUnavailable.add(matched)
-        }
-      }
-      emptyPages = matchedOnPage === 0 ? emptyPages + 1 : 0
-    }
-    return foundUnavailable.size
+    const { pending, missing } = await inspectAudiencePages(names, (pageNumber) => page.evaluate(requestPlatformListing, {
+      url: '/api/audience/list', label: '人群列表', payload: { page: pageNumber, pageSize: 20 },
+    }))
+    for (const target of missing) console.log(`人群包 ${target} 尚未出现在列表中，继续等待。`)
+    return pending
   } finally {
     await closeBrowserContext(context)
     console.log('人群列表检查页面已关闭。')
   }
 }
 
-async function inspectInsightResults(names, storageState) {
-  const context = trackContext(await launchPlatformBrowser(storageState))
+async function inspectInsightResults(names, storageState, options = {}) {
+  const context = trackContext(await launchPlatformBrowser(storageState, options))
   try {
     const page = context.pages()[0] || await context.newPage()
     await page.goto('https://ruyi.qq.com/audience-profile/result/', { waitUntil: 'domcontentloaded', timeout: 60000 })
@@ -94,12 +168,8 @@ async function inspectInsightResults(names, storageState) {
     // 列表接口支持按关键字过滤。直接查询接口比逐页读取 DOM 稳定，且
     // 能处理同名记录：平台可能同时保留旧的 LOCKING 记录和新的 SUCCESS
     // 记录，后续按更新时间选出与下载页一致的最新记录。
+    // 不按状态过滤，否则未知的新状态会被隐藏，误取到历史 SUCCESS。
     const normalizedNames = [...new Set(names.map((name) => withoutExtension(name).replace(/\s+/g, ' ').trim()).filter(Boolean))]
-    // 这些状态都不能安全下载：LOCKING 对应页面的“排队中” waitTag，
-    // PROCESSING 对应“计算中”，ERROR/FROZEN 代表失败或被冻结的结果。
-    const activeStatuses = new Set([
-      'PROCESSING', 'LOCKING', 'FROZEN', 'ERROR', 'PENDING', 'WAITING', 'GENERATING', 'FAILED',
-    ])
     let pendingCount = 0
     console.log(`开始检查洞悉结果：${normalizedNames.join('、')}`)
     for (const target of normalizedNames) {
@@ -111,20 +181,12 @@ async function inspectInsightResults(names, storageState) {
         filtering: [
           { field: 'keyword', operator: 'CONTAINS', values: [target] },
           { field: 'type', operator: 'IN', values: ['TAG'] },
-          { field: 'status', operator: 'IN', values: ['SUCCESS', 'PROCESSING', 'ERROR', 'FROZEN', 'LOCKING'] },
         ],
       }
-      const response = await page.evaluate(async (request) => {
-        const result = await fetch('/api/insight/list', {
-          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request),
-        })
-        if (!result.ok) throw new Error(`洞悉列表接口返回 HTTP ${result.status}`)
-        return result.json()
-      }, payload)
-      if (response?.success === false || (response?.code != null && response.code !== 0)) {
-        throw new Error(`洞悉列表接口失败：${response?.message || `code=${response?.code}`}`)
-      }
-      const items = response?.data?.listing?.items || []
+      const listing = await page.evaluate(requestPlatformListing, {
+        url: '/api/insight/list', label: '洞悉列表', payload,
+      })
+      const items = listing.items
       const matched = items.filter((item) => {
         const itemName = String(item.name || '').replace(/\s+/g, ' ').trim()
         return itemName === target || itemName === withoutExtension(target)
@@ -134,8 +196,9 @@ async function inspectInsightResults(names, storageState) {
       // SUCCESS 记录存在就把当前最新的 LOCKING/PROCESSING 误判为完成。
       const latest = matched[0]
       const latestStatus = String(latest?.status || '').toUpperCase()
-      const pending = activeStatuses.has(latestStatus)
-      if (pending) pendingCount += 1
+      // 记录还没出现在列表里时 latest 是 undefined，此时不能算完成，
+      // 否则提交洞悉后立刻就会被判定为“结果已就绪”。
+      if (pendingInsightResult(latest)) pendingCount += 1
       console.log(`洞悉任务 ${target} 当前状态：${latestStatus || '未找到'}${matched.length > 1 ? `（同名 ${matched.length} 条，按最新记录判断）` : ''}`)
     }
     console.log(`洞悉结果检查完成：未就绪 ${pendingCount} 个。`)
@@ -146,4 +209,7 @@ async function inspectInsightResults(names, storageState) {
   }
 }
 
-module.exports = { inspectPlatformFiles, inspectAnalyseAudience, inspectInsightResults, trackContext, launchPlatformBrowser }
+module.exports = {
+  inspectPlatformFiles, inspectAnalyseAudience, inspectInsightResults, trackContext, launchPlatformBrowser,
+  countPendingAudiences, countPendingAudiencesTotal, pendingInsightResult, requestPlatformListing, inspectAudiencePages,
+}

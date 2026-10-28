@@ -8,6 +8,7 @@ const { readJsonArray, writeJsonArray } = require("./lib/files");
 const { launchBrowser, closeBrowserContext } = require("./lib/browser");
 const { navigateWithLogin } = require("./lib/login");
 const { planUpload, prepareUpload, requireMapping, updateStage, pendingCandidates } = require("./lib/file-manifest");
+const { TASK_OUTCOME } = require("@ruyi/shared/runtime/task-outcome");
 let uploadRoot;
 
 
@@ -377,7 +378,7 @@ async function main() {
     console.log("本次上传操作完成。");
   } catch (error) {
     console.error("上传流程失败：", error.message);
-    process.exitCode = 1;
+    process.exitCode = TASK_OUTCOME.FAILURE;
   } finally {
     if (context) {
       await closeBrowserContext(context);
@@ -388,6 +389,6 @@ async function main() {
 
 if (require.main === module) main().catch((error) => {
   console.error(`上传流程失败：${error.message}`);
-  process.exitCode = 1;
+  process.exitCode = TASK_OUTCOME.FAILURE;
 });
 module.exports = { main, appendCreateGroupTodoList, platformFileName };

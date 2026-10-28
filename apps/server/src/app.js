@@ -12,6 +12,7 @@ const { registerAdminUsersRoutes } = require("./modules/auth/admin-users");
 const { registerPlatformStateRoutes } = require("./modules/platform-login/state-routes");
 const { registerPlatformLoginRoutes } = require("./modules/platform-login/routes");
 const { readDisplayConfig } = require("./modules/platform-login/display");
+const { registerAutoAdvanceRoutes } = require("./modules/auto-advance/routes");
 const fastifyStatic = require("@fastify/static");
 const { registerRoutes } = require("./modules/files/routes");
 
@@ -44,7 +45,11 @@ function buildApp(options = {}) {
   });
   if (options.db) app.decorate("db", options.db);
   app.decorate("worker", options.worker ?? null);
-  app.addHook("preClose", async () => { await app.worker?.stop(); });
+  app.decorate("autoAdvance", options.autoAdvance ?? null);
+  app.addHook("preClose", async () => {
+    await app.autoAdvance?.stop();
+    await app.worker?.stop();
+  });
   app.decorate("stateKeys", options.stateKeys ?? null);
   app.decorate("auditEnabled", auth);
   app.addHook("onSend", auditResponse);
@@ -58,6 +63,7 @@ function buildApp(options = {}) {
     app.register(registerLogsRoutes);
     app.register(registerPlatformStateRoutes);
     app.register(registerPlatformLoginRoutes, { ...options.platformLogin, displayConfig });
+    app.register(registerAutoAdvanceRoutes, { engine: options.autoAdvance });
   }
   const webDist = path.resolve(options.webDist ?? defaultWebDist);
   const indexFile = path.join(webDist, "index.html");

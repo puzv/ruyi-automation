@@ -195,7 +195,7 @@ async function main() {
     assert.ok(longLog.body.endsWith('\nTAIL')); assert.equal(longLog.body.includes('HEAD'), false)
     assert.equal((await request(a, 'POST', `/api/jobs/${id}/cancel`)).json().result, 'finished')
     fs.unlinkSync(logPath(success))
-    assert.equal((await readOutput(id)).output, '')
+    assert.match((await readOutput(id)).output, /任务日志文件缺失/)
 
     await reset()
     const resultId = await enqueue(a, 'result', 100, 'download')
@@ -214,10 +214,15 @@ async function main() {
     }
     const failResult = await enqueue(a, 'result-fail', 20, 'download')
     await waitStatus(failResult, 'failed')
-    assert.equal((await request(a, 'GET', `/api/jobs/${failResult}/results.zip`)).statusCode, 409)
+    // 失败前已写入的部分结果必须可取回：接口、ZIP 与任务详情都要一致。
+    assert.equal((await request(a, 'GET', `/api/jobs/${failResult}/results`)).json().count, 1)
+    assert.equal((await request(a, 'GET', `/api/jobs/${failResult}/results.zip`)).statusCode, 200)
+    assert.equal((await readOutput(failResult)).job.resultFiles, 1)
+    // 脚本以 0 退出但没有任何结果文件：不能算成功，也不能出现点不开的下载。
     const emptyResult = await enqueue(a, 'ok', 20, 'download')
-    await waitStatus(emptyResult, 'succeeded')
+    await waitStatus(emptyResult, 'failed')
     assert.equal((await request(a, 'GET', `/api/jobs/${emptyResult}/results`)).statusCode, 409)
+    assert.equal((await readOutput(emptyResult)).job.resultFiles, 0)
     assert.equal((await request(a, 'GET', `/api/jobs/${resultId}/results`)).json().count, 1, '后续任务不能改变旧归档')
     const archive = path.join(resolveWorkspace(a, dataRoot), 'job-results', resultId)
     fs.renameSync(archive, `${archive}.test-saved`)
@@ -228,6 +233,7 @@ async function main() {
     await stopWorker()
     const cancelledResult = await enqueue(a, 'ok', 20, 'download')
     await request(a, 'POST', `/api/jobs/${cancelledResult}/cancel`)
+    // 取消的下载任务即使清单已封存，也不向用户开放 ZIP 下载（产品约定，非封存失败）
     assert.equal((await request(a, 'GET', `/api/jobs/${cancelledResult}/results.zip`)).statusCode, 409)
 
     await reset()
@@ -378,7 +384,9 @@ async function main() {
     child.stdout.on('data', (data) => { childOutput += data })
     child.stderr.on('data', (data) => { childOutput += data })
     child.on('message', (message) => { orphanDir = message.stateDir })
-    orphanPid = await pidOf(orphan)
+    orphanPid = await pidOf(orphan).catch((error) => {
+      throw new Error(`孤儿任务未产生 PID：${error.message}；子进程输出=${childOutput || '(空)'}`)
+    })
     await until(() => orphanDir)
     const childExit = once(child, 'exit')
     const killedAt = Date.now()

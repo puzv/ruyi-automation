@@ -92,8 +92,22 @@ function recordResult(workspace, id, source, name = path.basename(source)) {
 }
 function finishResults(workspace, id) {
   const value = readManifest(workspace, id)
+  // 没有任何结果文件时不能封存：否则会留下一个“成功但不可下载”的任务，
+  // “我的任务”里仍会显示“重新下载”，点开却提示没有文件。
+  if (!value.files.length) throw new Error('本次任务没有可下载的结果文件')
   value.ready = true
   writeManifest(workspace, id, value)
+  return value.files.length
+}
+// 失败或取消的任务同样封存清单：已写入的文件是完整的，允许用户取回；
+// 封存后不能再追加，因此重试只会是新的任务编号，不会覆盖或混入旧文件。
+function sealResults(workspace, id) {
+  const value = readManifest(workspace, id)
+  if (!value.ready) {
+    value.ready = true
+    writeManifest(workspace, id, value)
+  }
+  return value.files.length
 }
 function resultEntries(workspace, id) {
   const value = readManifest(workspace, id)
@@ -180,4 +194,4 @@ function zipStream(workspace, id, entries) {
   return Readable.from(generate())
 }
 
-module.exports = { beginResults, resolveResultTarget, recordResult, finishResults, resultEntries, zipStream }
+module.exports = { beginResults, resolveResultTarget, recordResult, finishResults, sealResults, resultEntries, zipStream }

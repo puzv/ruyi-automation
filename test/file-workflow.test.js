@@ -178,10 +178,23 @@ function testAnalyseRetry() {
     else assert.equal(fs.readFileSync(donePath, 'utf8'), beforeDone);
   }
 }
+function testAnalyseSuccessMustReduceQueue() {
+  const root = path.join(temporary, 'analyse-no-progress');
+  const listPath = sample(root, 'analyseToDoList.json', '["stuck_pn"]');
+  sample(root, 'done.json', '[]');
+  const batch = loadFunctions('analyseAll.js', '\\ntry {\\n  main();', ['main'], {
+    './lib/preflight': { checkPreflight() {} },
+    './lib/paths': { requireUploadRoot: () => root },
+    child_process: { spawnSync: () => ({ status: 0 }) },
+  });
+  assert.equal(batch.main(), 1, '子脚本成功但清单未减少时必须失败');
+  assert.deepEqual(JSON.parse(fs.readFileSync(listPath, 'utf8')), ['stuck_pn']);
+}
 async function main() {
   try {
     await testAudienceReadiness();
     testAnalyseRetry();
+    testAnalyseSuccessMustReduceQueue();
     for (const failure of ['archive', 'queue']) {
       const root = path.join(temporary, failure);
       sample(root, 'raw/import/1/职业_pn.txt');
@@ -254,14 +267,16 @@ async function main() {
       await assert.rejects(download.clickDownload(fakeDownloadPage, [next.fileName], { uploadRoot: root, fileName: next.fileName }), /已存在/);
       assert.equal(fs.readFileSync(next.donePath, 'utf8'), doneBefore, '保存冲突不得清空下载清单');
     }
-    // A foreign object's longer name can contain the target's exact name.
-    // Status inspection must ignore it and count only the exact match.
+    // 1.1.9 的历史规则会把平台名称包含目标名称的记录也视为匹配，
+    // 因此外部对象的 PROCESSING 状态会计入处理中。
     const platform = require('@ruyi/server/src/modules/files/platform');
     const target = manifest.readManifest(path.join(temporary, 'queue')).files[0].platformName;
-    page.evaluate = async (_callback, pageNumber) => ({ data: { listing: { items: pageNumber === 1
-      ? [{ name: `foreign_${target}_suffix`, status: 'PROCESSING' }, { name: target, status: 'SUCCESS' }] : [] } } });
-    assert.equal(await platform.inspectAnalyseAudience([target]), 0);
-    console.log('假平台上传确认、重试归档、精确匹配与下载恢复测试通过');
+    page.evaluate = async (callback, request) => callback(request, async () => ({
+      ok: true, status: 200, json: async () => ({ code: 0, data: { listing: { items: request.payload.page === 1
+        ? [{ name: `foreign_${target}_suffix`, status: 'PROCESSING' }, { name: target, status: 'SUCCESS' }] : [] } } }),
+    }));
+    assert.equal(await platform.inspectAnalyseAudience([target]), 1);
+    console.log('假平台上传确认、重试归档、包含匹配与下载恢复测试通过');
   } finally {
     browser.launchBrowser = originals.launch;
     browser.closeBrowserContext = originals.close;

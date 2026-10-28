@@ -88,7 +88,7 @@ async function testStartup() {
   // 在隔离上下文中验证入口，不读取 .env，也不启动服务或连接数据库。
   const source = fs.readFileSync(path.join(__dirname, "../apps/server/src/main.js"), "utf8");
   async function run(env) {
-    const result = { errors: [], dbCreated: false, events: [], handlers: {} };
+    const result = { errors: [], dbCreated: false, events: [], handlers: {}, wakes: [] };
     const exited = new Error("模拟退出");
     const app = { addHook() {}, listen() { result.events.push('listen'); return Promise.resolve(); },
       async close() { result.events.push('app.close'); await Promise.resolve(); } };
@@ -102,12 +102,21 @@ async function testStartup() {
           if (name === "@ruyi/shared/runtime/platform-state/crypto") return { loadKeys: () => loadKeys(env) };
           if (name === "../../../db") return { createDb() { result.dbCreated = true; return {}; } };
           if (name === "./app") return { buildApp(options) {
-            result.options = options; Object.assign(app, { db: options.db, stateKeys: options.stateKeys }); return app;
+            result.events.push('app.build');
+            result.options = options;
+            Object.assign(app, { db: options.db, stateKeys: options.stateKeys, autoAdvance: options.autoAdvance });
+            return app;
           } };
           if (name === "@ruyi/shared/config") return { uploadRoot: '/tmp/测试工作区' };
           if (name === "@ruyi/worker/src/index") return { createWorker(options) {
             result.events.push('worker.create'); result.workerOptions = options;
             return { async start() { result.events.push('worker.start'); }, async stop() {} };
+          } };
+          if (name === "./modules/auto-advance/engine") return { createAutoAdvance(options) {
+            result.events.push('autoAdvance.create'); result.autoAdvanceOptions = options;
+            result.autoAdvance = { async start() { result.events.push('autoAdvance.start'); }, async stop() {},
+              wake(userId) { result.wakes.push(userId); } };
+            return result.autoAdvance;
           } };
           throw new Error("入口出现未预期的依赖");
         },
@@ -116,7 +125,8 @@ async function testStartup() {
         console: { error(message) { result.errors.push(message); } },
       });
     } catch (error) { if (error !== exited) throw error; }
-    await Promise.resolve(); await Promise.resolve();
+    // listen 回调是异步链，启动步骤越多需要的轮次越多，用 setImmediate 让整条链跑完。
+    for (let round = 0; round < 5; round++) await new Promise((resolve) => setImmediate(resolve));
     return result;
   }
   for (const env of [{}, { RUYI_STATE_KEY: "INVALID_PRIVATE_KEY!" }]) {
@@ -130,15 +140,29 @@ async function testStartup() {
   assert.equal(started.dbCreated, true);
   assert.deepEqual(started.options.stateKeys, keys);
   assert.deepEqual(started.errors, []);
-  assert.deepEqual(started.events, ['listen', 'worker.create', 'worker.start']);
+  assert.deepEqual(started.events, ['autoAdvance.create', 'app.build', 'listen', 'worker.create', 'worker.start', 'autoAdvance.start']);
+  assert.equal(started.options.autoAdvance, started.autoAdvance, '路由必须收到已创建的同一个引擎');
+  assert.equal(typeof started.workerOptions.onFinished, 'function');
+  started.workerOptions.onFinished({ user_id: 71 });
+  started.workerOptions.onFinished({ userId: 72 });
+  assert.deepEqual(started.wakes, [71, 72], 'Worker 完成回调应唤醒交给 app 的同一个引擎');
   assert.equal(started.workerOptions.db, started.options.db);
+  assert.equal(started.autoAdvanceOptions.db, started.options.db);
   assert.equal(typeof started.handlers.SIGTERM, 'function');
   await Promise.all([started.handlers.SIGINT(), started.handlers.SIGINT(), started.handlers.SIGTERM()]);
   assert.equal(started.events.filter((event) => event === 'app.close').length, 1, '重复信号只能关闭一次');
   assert.equal(started.exitCode, 0);
   const off = await run({ ...keyEnv, RUYI_WORKER: 'off', RUYI_DB_HOST: '127.0.0.1', RUYI_DB_USER: 'ruyi', RUYI_DB_NAME: 'ruyi_test' });
-  assert.deepEqual(off.events, ['listen']);
+  // Worker 可以独立部署，自动推进仍随 API 运行（它只负责提交任务）。
+  assert.deepEqual(off.events, ['autoAdvance.create', 'app.build', 'listen', 'autoAdvance.start']);
+  assert.equal(off.options.autoAdvance, off.autoAdvance);
   assert.equal(off.dotEnvLoaded, undefined, '完整环境变量配置不读取 .env');
+  // 自动推进可以单独关闭，不影响 API 与 Worker 的启动断言。
+  const noAdvance = await run({ ...keyEnv, RUYI_AUTO_ADVANCE: 'off' });
+  assert.deepEqual(noAdvance.events, ['app.build', 'listen', 'worker.create', 'worker.start']);
+  assert.equal(noAdvance.options.autoAdvance, null);
+  noAdvance.workerOptions.onFinished({ user_id: 73 });
+  assert.deepEqual(noAdvance.wakes, [], '关闭自动推进时 Worker 回调不应报错或唤醒引擎');
 }
 
 async function clearTestData(db) {

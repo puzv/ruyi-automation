@@ -6,6 +6,7 @@ const { spawnSync } = require("child_process");
 const { requireUploadRoot } = require("./lib/paths");
 const { checkPreflight } = require("./lib/preflight");
 const { planUpload, prepareUpload, pendingCandidates } = require("./lib/file-manifest");
+const { TASK_OUTCOME } = require("@ruyi/shared/runtime/task-outcome");
 
 function getPendingFiles(uploadRoot) {
   return pendingCandidates(uploadRoot)
@@ -107,14 +108,15 @@ function runScript(scriptName) {
 
   if (result.error) {
     console.error(`${scriptName} 启动失败：${result.error.message}`);
-    return false;
+    return TASK_OUTCOME.FAILURE;
   }
+  if (result.status === TASK_OUTCOME.NOT_READY) return TASK_OUTCOME.NOT_READY;
   if (result.status !== 0) {
     const reason = result.signal ? `信号 ${result.signal}` : `退出码 ${result.status}`;
     console.error(`${scriptName} 执行失败（${reason}）。`);
-    return false;
+    return TASK_OUTCOME.FAILURE;
   }
-  return true;
+  return TASK_OUTCOME.SUCCESS;
 }
 
 function main() {
@@ -128,12 +130,11 @@ function main() {
     else normalizeRawFileNames(uploadRoot);
   } catch (error) {
     console.error(`文件预处理失败：${error.message}`);
-    process.exitCode = 1;
-    return;
+    return TASK_OUTCOME.FAILURE;
   }
-  if (!plan.named && !runScript("move.js")) {
-    process.exitCode = 1;
-    return;
+  if (!plan.named) {
+    const moveOutcome = runScript("move.js");
+    if (moveOutcome !== TASK_OUTCOME.SUCCESS) return moveOutcome;
   }
 
   let pending = getPendingFiles(uploadRoot);
@@ -141,27 +142,25 @@ function main() {
   while (pending.length > 0) {
     round += 1;
     console.log(`开始第 ${round} 轮上传，剩余 ${pending.length} 个文件。`);
-    if (!runScript("upload.js")) {
-      process.exitCode = 1;
-      return;
-    }
+    const uploadOutcome = runScript("upload.js");
+    if (uploadOutcome !== TASK_OUTCOME.SUCCESS) return uploadOutcome;
 
     const remaining = getPendingFiles(uploadRoot);
     if (remaining.length >= pending.length) {
       console.error("upload.js 执行成功，但没有减少待处理文件，已停止以避免无限循环。");
-      process.exitCode = 1;
-      return;
+      return TASK_OUTCOME.FAILURE;
     }
     pending = remaining;
   }
 
   console.log("所有数据文件均已处理完成。");
+  return TASK_OUTCOME.SUCCESS;
 }
 
 if (require.main === module) {
-  try { main(); } catch (error) {
+  try { process.exitCode = main(); } catch (error) {
     console.error(`上传任务失败：${error.message}`);
-    process.exitCode = 1;
+    process.exitCode = TASK_OUTCOME.FAILURE;
   }
 }
-module.exports = { main, getPendingFiles, normalizeRawFileNames };
+module.exports = { main, getPendingFiles, normalizeRawFileNames, runScript };

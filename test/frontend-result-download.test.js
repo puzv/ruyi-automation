@@ -46,6 +46,21 @@ async function main() {
   assert.equal(clicks, 3, '退出登录后不能继续发起下载')
   await api.observeResultJob(job)
   assert.equal(clicks, 3)
+  // 失败但已有部分归档的任务：允许手动取回，但不会被自动下载。
+  await api.observeResultJob({ ...job, id: 'partial', status: 'failed', resultFiles: 1 })
+  assert.equal(clicks, 3, '失败任务不能自动下载')
+  assert.match(await api.downloadJobResults({ ...job, id: 'partial', status: 'failed', resultFiles: 1 }), /已发起/)
+  assert.equal(clicks, 4, '失败但有部分结果时可以手动重新下载')
+  assert.equal(await api.downloadJobResults({ ...job, id: 'partial-empty', status: 'failed', resultFiles: 0 }), '',
+    '失败且没有归档文件时不发起下载')
+  // 早期版本会把未就绪的下载记成成功，归档里却没有文件。
+  // 这类记录不能再触发下载，也不能让用户看到点不开的“重新下载”。
+  const before = calls
+  await api.observeResultJob({ ...job, id: 'empty', status: 'running' })
+  await api.observeResultJob({ ...job, id: 'empty', resultFiles: 0 })
+  assert.equal(await api.downloadJobResults({ ...job, id: 'empty', resultFiles: 0 }), '',
+    '没有归档文件时不应发起下载')
+  assert.equal(calls, before, '没有归档文件时连请求都不发')
   console.log('ZIP 自动下载、历史任务、跨页去重、重新下载和退出登录测试通过。')
 }
 main().catch((error) => { console.error(error); process.exitCode = 1 })

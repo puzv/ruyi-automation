@@ -6,7 +6,7 @@ const { runJob } = require('./runner')
 
 function createWorker({ db, keys, log, dataRoot, workerId = `${os.hostname()}:${process.pid}`,
   maxConcurrent = Number(process.env.RUYI_MAX_CONCURRENT_JOBS), pollMs = 1000,
-  runner = runJob, runnerOptions = {}, staleSeconds = 60 }) {
+  runner = runJob, runnerOptions = {}, staleSeconds = 60, onFinished }) {
   const limit = Number.isSafeInteger(maxConcurrent) && maxConcurrent > 0 ? maxConcurrent : 2
   const running = new Map()
   const timers = new Set()
@@ -73,7 +73,12 @@ function createWorker({ db, keys, log, dataRoot, workerId = `${os.hostname()}:${
       }
       await entry.finish(result)
     })().catch(() => log?.error('Worker 保存任务结束信息失败，将由心跳回收'))
-      .finally(() => { running.delete(job.id); wake() })
+      .finally(() => {
+        running.delete(job.id)
+        // 任务刚结束时平台状态最可能发生变化，让自动推进立即检查一次。
+        try { onFinished?.(job) } catch (_) { log?.error('任务结束通知失败') }
+        wake()
+      })
   }
 
   function wake() {

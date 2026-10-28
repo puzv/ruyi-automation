@@ -9,6 +9,7 @@ const { launchBrowser, closeBrowserContext } = require("./lib/browser");
 const { checkPreflight } = require("./lib/preflight");
 const { navigateWithLogin } = require("./lib/login");
 const { requireMapping, updateStage } = require("./lib/file-manifest");
+const { TASK_OUTCOME } = require("@ruyi/shared/runtime/task-outcome");
 
 function withoutExtension(fileName) {
   return path.basename(fileName).replace(/\.(?:txt|csv)$/i, "");
@@ -224,6 +225,13 @@ async function submitInsight(page) {
   const response = await createResponse;
   let responseBody = null;
   if (response) responseBody = await response.json().catch(() => null);
+  const httpOk = !response || typeof response.ok !== "function" || response.ok();
+  const responseSucceeded = response && httpOk && responseBody
+    && responseBody.success !== false
+    && !(typeof responseBody.code === "number" && responseBody.code !== 0)
+    && !(typeof responseBody.ret === "number" && responseBody.ret !== 0)
+    && (responseBody.success === true || responseBody.code === 0
+      || responseBody.ret === 0 || responseBody.data != null);
   const navigationDeadline = Date.now() + 10000;
   while (
     !page.url().includes("/audience-profile/result")
@@ -233,9 +241,11 @@ async function submitInsight(page) {
     await page.waitForTimeout(250);
   }
   const navigated = page.url().includes("/audience-profile/result") || page.url().endsWith("/insight/insight");
-  if (!navigated && !responseBody?.success) {
+  if (!responseSucceeded) {
     const errors = await page.locator('[role="alert"]:visible, .spaui-form-item-error:visible, .error:visible').allInnerTexts().catch(() => []);
-    throw new Error(`洞察提交后未跳转${errors.length ? `：${errors.join("；")}` : "，请检查必填项和筛选项"}`);
+    const error = new Error(`洞察提交结果无法确认${errors.length ? `：${errors.join("；")}` : "，接口未确认成功"}`);
+    error.code = response ? "SUBMIT_FAILED" : "SUBMIT_UNCERTAIN";
+    throw error;
   }
   console.log(`提交成功${navigated ? `，已跳转：${page.url()}` : "（接口已确认成功）"}`);
 }
@@ -276,5 +286,6 @@ async function main() {
 
 main().catch((error) => {
   console.error(`分析页面操作失败：${error.message}`);
-  process.exitCode = /找不到|不可用|没有待处理|计算中|处理中|未成功选中|暂不可用|人群规模小于1000/.test(error.message) ? 2 : 1;
+  process.exitCode = /找不到|不可用|没有待处理|计算中|处理中|未成功选中|暂不可用/.test(error.message)
+    ? TASK_OUTCOME.NOT_READY : TASK_OUTCOME.FAILURE;
 });

@@ -102,7 +102,7 @@ onBeforeUnmount(() => { disposed = true; window.clearTimeout(timer) })
           <td class="nowrap">{{ formatTime(item.startedAt) }}</td>
           <td class="nowrap">{{ jobDuration(item, now) }}</td>
           <td class="log-description">{{ item.errorMessage || '—' }}<span v-if="isActiveJob(item) && item.cancelRequested"> 正在停止任务…</span></td>
-          <td><div class="row-actions"><a class="secondary-button job-log-link" :href="`/api/jobs/${encodeURIComponent(item.id)}/log`" target="_blank" rel="noopener noreferrer">查看日志</a><button v-if="!admin && item.task === 'download' && item.status === 'succeeded'" class="secondary-button" :disabled="downloading[item.id]" @click="redownload(item)">重新下载</button><button v-if="!admin && isActiveJob(item)" class="secondary-button" :disabled="loading || cancelling[item.id] || item.cancelRequested" @click="cancelJob(item)">取消</button></div></td>
+          <td><div class="row-actions"><a class="secondary-button job-log-link" :href="`/api/jobs/${encodeURIComponent(item.id)}/log`" target="_blank" rel="noopener noreferrer">查看日志</a><button v-if="!admin && item.task === 'download' && ['succeeded', 'failed'].includes(item.status) && item.resultFiles" class="secondary-button" :disabled="downloading[item.id]" @click="redownload(item)">重新下载</button><button v-if="!admin && isActiveJob(item)" class="secondary-button" :disabled="loading || cancelling[item.id] || item.cancelRequested" @click="cancelJob(item)">取消</button></div></td>
         </tr>
         <tr v-if="!items.length"><td class="empty-state" :colspan="admin ? 8 : 7">{{ loading ? '正在加载…' : '暂无任务' }}</td></tr>
       </tbody>

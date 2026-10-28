@@ -144,6 +144,16 @@ function activeJobForUser(db, userId) {
     .executeTakeFirst();
 }
 
+// 自动推进只在用户近期确实用过平台时才探测，避免替人补做历史遗留待办。
+async function hasJobSince(db, userId, hours, taskTypes) {
+  if (taskTypes && !taskTypes.length) return false;
+  let query = db.selectFrom("ruyi_jobs").select("id").where("user_id", "=", userId)
+    .where("queued_at", ">=", sql`DATE_SUB(NOW(3), INTERVAL ${hours} HOUR)`);
+  if (taskTypes) query = query.where("task", "in", taskTypes);
+  const row = await query.executeTakeFirst();
+  return Boolean(row);
+}
+
 async function hasRunningJob(db, userId) {
   const row = await db.selectFrom("ruyi_jobs").select("id").where("user_id", "=", userId)
     .where("status", "=", "running").executeTakeFirst();
@@ -153,5 +163,5 @@ async function hasRunningJob(db, userId) {
 module.exports = {
   withClaimLock, enqueueJob, claimNextJob, heartbeat, finishJob, setLogPath, requestCancel,
   listCancelRequested, recoverStaleJobs, getJob, getJobForUser, queuePosition, listJobs,
-  activeJobForUser, hasRunningJob,
+  activeJobForUser, hasRunningJob, hasJobSince,
 };

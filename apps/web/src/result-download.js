@@ -11,8 +11,12 @@ export function resetResultDownloads() {
 }
 
 export async function downloadJobResults(job) {
-  if (job.task !== 'download' || job.status !== 'succeeded') return ''
+  // 失败的下载任务若已有归档文件，同样允许手动取回；自动下载只针对成功的任务。
+  if (job.task !== 'download' || !['succeeded', 'failed'].includes(job.status)) return ''
   if (pending.has(job.id)) return ''
+  // 服务端返回了归档文件数：0 表示这次任务其实没有产出文件（早期版本会把
+  // 未就绪的下载记成成功）。此时不发起请求，直接给出可理解的提示。
+  if (job.resultFiles === 0) return ''
   const version = generation
   pending.add(job.id)
   try {

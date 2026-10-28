@@ -6,6 +6,7 @@ const { createHash } = require('node:crypto')
 const { projectRoot, jobWrapper, automationRoot } = require('@ruyi/shared/paths')
 const { storeRefreshedState } = require('@ruyi/shared/runtime/platform-state/index')
 const { markExpired } = require('@ruyi/shared/runtime/repos/platform-states')
+const { TASK_OUTCOME } = require('@ruyi/shared/runtime/task-outcome')
 
 const stateDirs = new Set()
 const completions = new Set()
@@ -81,14 +82,29 @@ function executeTask({ id, script, user, uploadDir, headless, platformState, db,
       }
     }, 5000)
   }
-  child.stdout.on('data', onOutput)
-  child.stderr.on('data', onOutput)
+  // 脚本用非零退出码表达失败，但 stderr 不一定有内容（例如下载“未就绪”
+  // 只是把原因打到 stdout 后以 2 退出）。保留最近几行，供失败时兜底说明原因。
+  let recentOutput = ''
+  const collect = (data) => {
+    recentOutput = (recentOutput + data.toString('utf8')).slice(-2000)
+    onOutput(data)
+  }
+  child.stdout.on('data', collect)
+  child.stderr.on('data', collect)
+  const lastLines = () => recentOutput.split('\n').map((line) => line.trim()).filter(Boolean).slice(-3).join('；')
   const completion = new Promise((resolve) => {
     async function finish(code, exitSignal, errorMessage = null) {
       if (finished) return
       finished = true
       clearTimeout(killTimer)
       signal?.removeEventListener('abort', cancel)
+      if (code !== 0 && !errorMessage && !cancelled) {
+        // 退出码 2 是脚本约定的“任务未就绪，可稍后重试”。
+        const detail = lastLines()
+        errorMessage = code === 2
+          ? `任务未就绪，稍后可重试${detail ? `：${detail}` : ''}`
+          : `任务执行失败${detail ? `：${detail}` : '，请联系管理员'}`
+      }
       let stateRefreshed = false, stateExpired = false
       try {
         if (dir) {
@@ -108,8 +124,10 @@ function executeTask({ id, script, user, uploadDir, headless, platformState, db,
       } finally {
         try { if (dir) removeStateDir(dir) } catch (_) { log?.error('清理任务登录态临时目录失败') }
       }
-      resolve({ status: cancelled ? 'cancelled' : code === 0 ? 'succeeded' : 'failed',
-        exitCode: code ?? null, exitSignal: exitSignal ?? null, errorMessage, stateRefreshed, stateExpired })
+      const outcome = cancelled ? null : code === TASK_OUTCOME.SUCCESS ? 'success'
+        : code === TASK_OUTCOME.NOT_READY ? 'not_ready' : 'failure'
+      resolve({ status: cancelled ? 'cancelled' : code === TASK_OUTCOME.SUCCESS ? 'succeeded' : 'failed',
+        outcome, exitCode: code ?? null, exitSignal: exitSignal ?? null, errorMessage, stateRefreshed, stateExpired })
     }
     child.on('close', finish)
     child.on('error', () => {

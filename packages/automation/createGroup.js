@@ -9,6 +9,7 @@ const { launchBrowser, closeBrowserContext } = require("./lib/browser");
 const { checkPreflight } = require("./lib/preflight");
 const { navigateWithLogin } = require("./lib/login");
 const { requireMapping, resolveFileType, updateStage } = require("./lib/file-manifest");
+const { TASK_OUTCOME } = require("@ruyi/shared/runtime/task-outcome");
 
 const groupUrls = {
   idfa: urls.idfaUpload,
@@ -180,9 +181,40 @@ async function submitGroup(page) {
     }
     await page.waitForTimeout(200);
   }
+  // The local manifests are changed only after the platform acknowledges this
+  // POST.  A click followed by a fixed delay cannot distinguish a committed
+  // request from a rejected request or a lost browser response.
+  const responsePromise = page.waitForResponse((response) => {
+    if (response.request().method() !== "POST") return false;
+    return /(?:audience|group|dnUpload|fileaccess)/i.test(response.url());
+  }, { timeout: 60000 }).catch(() => null);
   await submitButton.click();
-  await page.waitForTimeout(1000);
-  console.log("已点击提交。");
+  const response = await responsePromise;
+  if (!response) {
+    const error = new Error("提交结果无法确认，未更新本地创建任务清单，请稍后人工核对平台后重试");
+    error.code = "SUBMIT_UNCERTAIN";
+    throw error;
+  }
+  let payload;
+  try { payload = await response.json(); } catch (_) {
+    const error = new Error(`提交接口返回无效 JSON（HTTP ${response.status()}），未更新本地创建任务清单`);
+    error.code = "SUBMIT_UNCERTAIN";
+    throw error;
+  }
+  const explicitFailure = payload?.success === false
+    || (typeof payload?.code === "number" && payload.code !== 0)
+    || (typeof payload?.ret === "number" && payload.ret !== 0);
+  const httpOk = typeof response.ok !== "function" || response.ok();
+  const explicitSuccess = payload?.success === true
+    || payload?.code === 0
+    || payload?.ret === 0
+    || payload?.data != null;
+  if (!httpOk || explicitFailure || !explicitSuccess) {
+    const error = new Error(`${explicitSuccess ? "平台拒绝创建人群" : "平台创建响应未确认成功"}（HTTP ${response.status()}：${payload?.message || payload?.msg || "未知错误"}），未更新本地创建任务清单`);
+    error.code = explicitSuccess ? "SUBMIT_FAILED" : "SUBMIT_UNCERTAIN";
+    throw error;
+  }
+  console.log(`平台已确认创建提交：HTTP ${response.status()}`);
 }
 
 function displayedNameForLog(requestedName, nameWithoutExtension) {
@@ -230,7 +262,10 @@ async function main() {
   }
 }
 
-main().catch((error) => {
+if (typeof module !== "undefined" && require.main === module) main().catch((error) => {
   console.error(`创建地址跳转失败：${error.message}`);
-  process.exitCode = /列表中找不到文件名称/.test(error.message) ? 2 : 1;
+  process.exitCode = /列表中找不到文件名称|搜索文件超时/.test(error.message)
+    ? TASK_OUTCOME.NOT_READY : TASK_OUTCOME.FAILURE;
 });
+
+if (typeof module !== "undefined") module.exports = { main, readNextFileName, recordAnalysedFile, removeFromCreateTodoList, submitGroup };

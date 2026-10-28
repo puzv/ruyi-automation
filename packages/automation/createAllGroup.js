@@ -7,6 +7,7 @@ const { launchBrowser, closeBrowserContext } = require("./lib/browser");
 const { findUploadRoot } = require("./lib/paths");
 const { readJsonArray } = require("./lib/files");
 const { checkPreflight } = require("./lib/preflight");
+const { TASK_OUTCOME } = require("@ruyi/shared/runtime/task-outcome");
 
 function findCreateTodoPath(uploadRoot) {
   const candidates = [
@@ -37,11 +38,12 @@ function runCreateGroup() {
   if (result.error) {
     throw new Error(`createGroup.js 启动失败：${result.error.message}`);
   }
-  if (result.status === 2) return false;
+  if (result.status === TASK_OUTCOME.NOT_READY) return TASK_OUTCOME.NOT_READY;
   if (result.status !== 0) {
     const reason = result.signal ? `信号 ${result.signal}` : `退出码 ${result.status}`;
     throw new Error(`createGroup.js 执行失败（${reason}）`);
   }
+  return TASK_OUTCOME.SUCCESS;
 }
 
 async function inspectAudienceTotal() {
@@ -109,9 +111,14 @@ async function main() {
     round += 1;
     console.log(`开始第 ${round} 轮创建人群，剩余 ${pending.length} 个文件。`);
     const before = pending.length;
-    const created = runCreateGroup();
+    const outcome = runCreateGroup();
+    const created = outcome === TASK_OUTCOME.SUCCESS;
 
     const remaining = readTodo(todoPath);
+    if (created && remaining.length >= before) {
+      console.error("createGroup.js 执行成功，但创建任务清单没有减少，已停止以避免重复提交。");
+      return TASK_OUTCOME.FAILURE;
+    }
     if (!created && remaining.length === before) {
       // 当前文件尚未出现在平台：移到清单末尾，继续尝试其它文件。
       const todo = readTodo(todoPath);
@@ -120,7 +127,7 @@ async function main() {
       stalledRounds += 1;
       if (stalledRounds >= todo.length) {
         console.log("连续一轮文件均未在平台找到，暂时停止，保留待创建清单供下次重试。");
-        break;
+        return TASK_OUTCOME.NOT_READY;
       }
     } else if (remaining.length < before) {
       stalledRounds = 0;
@@ -129,9 +136,14 @@ async function main() {
   }
 
   console.log("创建任务清单已清空，所有人群创建操作完成。");
+  return TASK_OUTCOME.SUCCESS;
 }
 
-main().catch((error) => {
+if (typeof module !== "undefined" && require.main === module) main().then((code) => {
+  process.exitCode = code;
+}).catch((error) => {
   console.error(`批量创建人群失败：${error.message}`);
   process.exitCode = 1;
 });
+
+module.exports = { main, readTodo, runCreateGroup };
