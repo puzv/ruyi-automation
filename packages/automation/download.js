@@ -138,119 +138,74 @@ async function markDownloadTarget(page, expectedTitles = []) {
   }, { expectedTitles: titles });
 }
 
+async function waitForTaskList(page, response) {
+  if (!response || !response.ok()) throw new Error("搜索分析任务失败：未收到有效的结果列表响应");
+  const result = await response.json();
+  const items = result?.data?.listing?.items;
+  if (result?.success === false || (result?.code != null && result.code !== 0) || !Array.isArray(items)) {
+    throw new Error("搜索分析任务失败：结果列表接口异常");
+  }
+  // 等待整张列表与接口响应一致，避免旧卡片或搜索高亮片段抢先匹配。
+  await page.waitForFunction((names) => {
+    const visible = (node) => node.getClientRects().length > 0;
+    const cards = [...document.querySelectorAll('[class*="listItem"], [class*="list-item"], [role="listitem"]')].filter(visible);
+    const titles = cards.map((card) => (card.querySelector('[class*="title"], [class*="Title"]')?.textContent || "").trim());
+    return titles.length === names.length && titles.every((title, index) => title === names[index]);
+  }, items.map((item) => String(item.name || "").trim()), { timeout: 15000 });
+}
+
 async function selectTask(page, fileName) {
   const requested = path.basename(fileName);
   const stem = normalizeTaskName(requested);
-  // The result list is paginated (often hundreds of pages), so always use the
-  // built-in search rather than walking pages one by one.
-  const searchTrigger = page.getByText("搜索", { exact: true }).first();
-  await searchTrigger.waitFor({ state: "visible", timeout: 30000 });
-  await searchTrigger.click();
   const input = page.locator('input[placeholder="请输入关键词或ID"]:visible').first();
+  if (!await input.isVisible()) {
+    const searchTrigger = page.getByText("搜索", { exact: true }).first();
+    await searchTrigger.waitFor({ state: "visible", timeout: 30000 });
+    await searchTrigger.click();
+  }
   await input.waitFor({ state: "visible", timeout: 10000 });
-  const searchResponse = page.waitForResponse((response) => {
+  const waitResponse = () => page.waitForResponse((response) => {
     if (!response.url().includes("/api/insight/list") || response.request().method() !== "POST") return false;
     try {
       const payload = JSON.parse(response.request().postData() || "{}");
-      return payload?.filtering?.some((entry) => entry.field === "keyword"
-        && entry.values?.includes(stem));
-    } catch (_) {
-      return false;
-    }
-  }, { timeout: 15000 }).catch(() => null);
+      return payload?.filtering?.some((entry) => entry.field === "keyword" && entry.values?.includes(stem));
+    } catch (_) { return false; }
+  }, { timeout: 15000 });
+  // 清空已输入的同一关键词，确保重试时也会触发新的搜索请求。
+  await input.fill("");
+  let response = waitResponse();
   await input.fill(stem);
-
-  // Search is debounced by the UI. Waiting for its API response prevents the
-  // previous page's same-named card from winning the selection race.
-  if (!await searchResponse) throw new Error(`搜索分析任务失败：未收到结果列表响应（关键词：${stem}）`);
-  // Allow the response handler/React render to replace the card list before
-  // inspecting status dots (the response can precede DOM reconciliation).
-  await page.waitForTimeout(250);
-  const found = await page.waitForFunction(({ requestedName, stemName }) => {
-    const normalize = (value) => String(value || "")
-      .replace(/[\u200B-\u200D\uFEFF]/g, "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .normalize("NFC")
-      .replace(/\.(?:txt|csv)$/i, "")
-      .trim();
-    const expected = normalize(requestedName) || normalize(stemName);
-    return [...document.querySelectorAll("body *")].some((node) => {
-      if (["INPUT", "TEXTAREA", "SCRIPT", "STYLE"].includes(node.tagName)) return false;
-      const style = getComputedStyle(node);
-      const rect = node.getBoundingClientRect();
-      if (style.display === "none" || style.visibility === "hidden" || rect.width <= 0 || rect.height <= 0) return false;
-      if (normalize(node.innerText || node.textContent) !== expected) return false;
-      return ![...node.children].some((child) => normalize(child.innerText || child.textContent) === expected);
-    });
-  }, { requestedName: requested, stemName: stem }, { timeout: 15000 }).catch(() => false);
-  if (!found) throw new Error(`分析任务列表中找不到：${requested}`);
-
-  const items = page.locator(".listItem--G0aPY");
-  const matches = [];
-  for (let i = 0; i < await items.count(); i += 1) {
-    const card = items.nth(i);
-    const title = (await card.locator(".title--cpoFh").innerText()).trim();
-    if (!sameTaskTitle(title, requested) && !sameTaskTitle(title, stem)) continue;
-    // Search results are sorted by lastModifiedTime descending. Duplicate
-    // names can therefore include an older SUCCESS record and a newer queued
-    // record; keep the newest card so we do not download stale data.
-    matches.push({ card, title });
+  const visited = new Set();
+  while (true) {
+    await waitForTaskList(page, await response);
+    const titles = await page.locator('[class*="listItem"], [class*="list-item"], [role="listitem"]').evaluateAll((cards) =>
+      cards.filter((card) => card.getClientRects().length > 0)
+        .map((card) => (card.querySelector('[class*="title"], [class*="Title"]')?.textContent || "").trim()));
+    const signature = JSON.stringify(titles);
+    if (visited.has(signature)) throw new Error(`搜索分析任务失败：分页未前进（${stem}）`);
+    visited.add(signature);
+    const index = titles.findIndex((title) => sameTaskTitle(title, requested));
+    if (index >= 0) {
+      const cards = page.locator('[class*="listItem"]:visible, [class*="list-item"]:visible, [role="listitem"]:visible');
+      await cards.nth(index).click();
+      const title = titles[index];
+      const deadline = Date.now() + 15000;
+      do {
+        const detail = await markDownloadTarget(page, getExpectedTitles(requested, title));
+        if (detail.ok) {
+          console.log(`已选择分析任务：${title}`);
+          return title;
+        }
+        await page.waitForTimeout(250);
+      } while (Date.now() < deadline);
+      throw new Error(`下载未就绪：目标任务详情未显示（${stem}），已停止提交以避免下载到其他任务的结果`);
+    }
+    // 搜索为包含匹配，_3 的精确结果可能在 _30…_39 之后的下一页。
+    const next = page.locator('.pagination li:not(.disabled):not([aria-disabled="true"]) a:has(.arrow-right)').first();
+    if (!await next.isVisible()) throw new Error(`分析任务列表中找不到：${requested}`);
+    response = waitResponse();
+    await next.click();
   }
-  if (matches.length) {
-    const { card, title } = matches[0];
-    await card.click();
-    await page.waitForFunction((expected) => {
-      const active = document.querySelector(".listItem--G0aPY.active--okDqb .title--cpoFh");
-      if (!active) return false;
-      const normalize = (value) => String(value || "")
-        .replace(/[\u200B-\u200D\uFEFF]/g, "")
-        .replace(/\s+/g, " ")
-        .trim()
-        .normalize("NFC")
-        .replace(/\.(?:txt|csv)$/i, "")
-        .trim();
-      return normalize(active.innerText) === normalize(expected);
-    }, title, { timeout: 30000 });
-    console.log(`已选择分析任务：${title}`);
-    return title;
-  }
-
-  // The platform periodically changes generated list/card class names. Mark
-  // the exact visible title and click its nearest list item as a fallback.
-  const marked = await page.evaluate((expectedName) => {
-    const normalize = (value) => String(value || "")
-      .replace(/[\u200B-\u200D\uFEFF]/g, "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .normalize("NFC")
-      .replace(/\.(?:txt|csv)$/i, "")
-      .trim();
-    const expected = normalize(expectedName);
-    const visible = (node) => {
-      const style = getComputedStyle(node);
-      const rect = node.getBoundingClientRect();
-      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
-    };
-    const title = [...document.querySelectorAll("body *")].find((node) => {
-      if (!visible(node) || ["INPUT", "TEXTAREA", "SCRIPT", "STYLE"].includes(node.tagName)) return false;
-      if (normalize(node.innerText || node.textContent) !== expected) return false;
-      return ![...node.children].some((child) => normalize(child.innerText || child.textContent) === expected);
-    });
-    if (!title) return false;
-    const card = title.closest('[class*="listItem"], [class*="list-item"], [role="listitem"]') || title;
-    card.setAttribute("data-ruyi-task-target", "1");
-    return true;
-  }, stem);
-  if (marked) {
-    const target = page.locator('[data-ruyi-task-target="1"]').first();
-    await target.click();
-    await target.evaluate((element) => element.removeAttribute("data-ruyi-task-target")).catch(() => {});
-    await page.waitForTimeout(500);
-    console.log(`已选择分析任务：${stem}（兼容平台页面结构）`);
-    return stem;
-  }
-  throw new Error(`分析任务列表中找不到：${requested}`);
 }
 
 async function ensureTaskReady(page, fileName, selectedTitle) {
