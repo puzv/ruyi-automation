@@ -10,7 +10,7 @@ const { hashPassword, verifyPassword, validatePasswordStrength, validateUsername
 
 async function clearTestData(db) {
   // 任务明确要求的测试库清理；业务代码中的操作记录仍然只追加。
-  for (const table of ["ruyi_user_sessions", "ruyi_platform_states", "ruyi_operation_logs", "ruyi_users"]) {
+  for (const table of ["ruyi_api_tokens", "ruyi_user_sessions", "ruyi_platform_states", "ruyi_operation_logs", "ruyi_users"]) {
     await db.deleteFrom(table).execute();
   }
 }

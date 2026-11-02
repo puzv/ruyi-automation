@@ -141,11 +141,25 @@ function crcUpdate(crc, data) {
 }
 // STORE + data descriptor 可边读边写，无需缓存整包或预先读两遍文件；UTF-8 标志保留中文名。
 function zipStream(workspace, id, entries) {
+  return filesZipStream(entries.files, (entry) => safePath(workspace, jobDirectory(workspace, id), entry.stored))
+}
+function filesZipStream(files, resolvePath = (entry) => entry.path) {
+  if (!files.length || files.length >= 65535) throw new Error('ZIP 文件数量无效')
+  const seen = new Set()
+  let total = 22
+  for (const entry of files) {
+    if (typeof entry.name !== 'string' || entry.name.split('/').some((part) => !part || part === '.' || part === '..')
+      || /[\\\x00-\x1f\x7f]/.test(entry.name) || Buffer.byteLength(entry.name) > 65535
+      || seen.has(entry.name) || !Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size >= MAX32) throw new Error('ZIP 文件信息无效')
+    seen.add(entry.name)
+    total += entry.size + 30 + 16 + 46 + Buffer.byteLength(entry.name) * 2
+    if (total >= MAX32) throw new Error('ZIP 文件过大')
+  }
   async function* generate() {
     let offset = 0
     const central = []
-    for (const entry of entries.files) {
-      const target = safePath(workspace, jobDirectory(workspace, id), entry.stored)
+    for (const entry of files) {
+      const target = resolvePath(entry)
       const fd = await fs.promises.open(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
       let stream
       try {
@@ -187,11 +201,11 @@ function zipStream(workspace, id, entries) {
     const start = offset
     for (const buffer of central) { yield buffer; offset += buffer.length }
     const end = Buffer.alloc(22)
-    end.writeUInt32LE(0x06054b50); end.writeUInt16LE(entries.files.length, 8); end.writeUInt16LE(entries.files.length, 10)
+    end.writeUInt32LE(0x06054b50); end.writeUInt16LE(files.length, 8); end.writeUInt16LE(files.length, 10)
     end.writeUInt32LE(offset - start, 12); end.writeUInt32LE(start, 16)
     yield end
   }
   return Readable.from(generate())
 }
 
-module.exports = { beginResults, resolveResultTarget, recordResult, finishResults, sealResults, resultEntries, zipStream }
+module.exports = { beginResults, resolveResultTarget, recordResult, finishResults, sealResults, resultEntries, zipStream, filesZipStream }

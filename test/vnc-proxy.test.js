@@ -60,7 +60,7 @@ async function clearTestData(db) {
   if (!rows.length) return;
   const ids = rows.map((row) => row.id);
   // 测试仅清理自己的记录；生产代码仍保持操作记录只追加。
-  for (const table of ['ruyi_user_sessions', 'ruyi_platform_states', 'ruyi_operation_logs']) {
+  for (const table of ['ruyi_api_tokens', 'ruyi_user_sessions', 'ruyi_platform_states', 'ruyi_operation_logs']) {
     await db.deleteFrom(table).where('user_id', 'in', ids).execute();
   }
   await db.deleteFrom('ruyi_users').where('id', 'in', ids).execute();

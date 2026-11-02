@@ -1,12 +1,12 @@
 const { scripts } = require('@ruyi/shared/tasks')
-const fs = require('node:fs')
-const path = require('node:path')
 const { randomUUID } = require('node:crypto')
 const multipart = require('@fastify/multipart')
+const { importMultipartFiles } = require('./import')
+const { registerTransferRoutes } = require('../transfer/routes')
 const { uploadRoot } = require('@ruyi/shared/config')
 const { closeBrowserContext } = require('@ruyi/automation/lib/browser.js')
 const { groupPlatformNames } = require('@ruyi/automation/lib/file-manifest')
-const { decodeUploadedFileName, resolveWorkspace, ensureWorkspace, getWorkspaceStatus, readTaskItems } = require('@ruyi/shared/runtime/workspace')
+const { resolveWorkspace, ensureWorkspace, getWorkspaceStatus, readTaskItems } = require('@ruyi/shared/runtime/workspace')
 const { inspectPlatformFiles, inspectAnalyseAudience, inspectInsightResults } = require('./platform')
 const { startJob, jobBelongsToUser, cleanupJobStates } = require('../jobs/memory')
 const { loadUserState, getStatusSummary } = require('@ruyi/shared/runtime/platform-state/index')
@@ -92,50 +92,7 @@ async function registerRoutes(api, options = {}) {
     }
   })
   api.post('/api/import-folder', async (req, res) => {
-    req.auditImport = { count: 0, skipped: 0, files: [] }
-    if (req.user && await userHasRunningJob(req)) return res.code(409).send({ ok: false, message: '当前用户有任务正在运行，请完成后再导入文件' })
-    let files
-    try {
-      files = []
-      if (req.isMultipart()) {
-        for await (const part of req.parts()) {
-          if (!part.file) continue
-          if (part.fieldname !== 'files') throw new Error('非预期的文件字段')
-          files.push({ originalname: part.filename, buffer: await part.toBuffer() })
-        }
-      }
-    } catch (error) {
-      return res.code(400).send({ ok: false, message: error.message })
-    }
-    if (req.user && await userHasRunningJob(req)) return res.code(409).send({ ok: false, message: '当前用户有任务正在运行，请完成后再导入文件' })
-    try {
-      const workspace = ensureWorkspace(workspaceFor(req))
-      const rawDir = path.join(workspace, 'raw')
-      const importId = req.user ? randomUUID() : null
-      let count = 0
-      let skipped = 0
-      for (const file of files) {
-        const relative = decodeUploadedFileName(file.originalname || file.filename).replace(/^[/\\]+/, '')
-        const fileName = path.basename(relative.replace(/\\/g, '/'))
-        if (fileName.startsWith('.') || !/(?:idfa|oaid|pn)/i.test(fileName) || !/\.(?:txt|csv)$/i.test(fileName)) {
-          skipped += 1
-          req.auditImport.skipped = skipped
-          continue
-        }
-        const targetDir = req.user ? path.join(rawDir, importId, String(count + 1)) : rawDir
-        fs.mkdirSync(targetDir, { recursive: true })
-        const target = path.resolve(targetDir, fileName)
-        if (!target.startsWith(`${rawDir}${path.sep}`)) throw new Error('非法文件路径')
-        if (fs.existsSync(target)) throw new Error(`文件已存在，不会覆盖：${path.basename(target)}`)
-        fs.writeFileSync(target, file.buffer, { flag: 'wx' })
-        count += 1
-        req.auditImport.count = count
-        if (req.auditImport.files.length < 100) req.auditImport.files.push(fileName)
-      }
-      return res.send({ ok: true, count, skipped })
-    } catch (error) {
-      return res.code(400).send({ ok: false, message: error.code ? '文件导入失败，请联系管理员' : error.message })
-    }
+    return importMultipartFiles(req, res, { workspace: workspaceFor(req), userHasRunningJob })
   })
   api.post('/api/run/:task', async (req, res) => {
     const script = scripts[req.params.task]
@@ -189,6 +146,7 @@ async function registerRoutes(api, options = {}) {
     }
   })
   if (options.auth) {
+    await registerTransferRoutes(api, { dataRoot, userHasRunningJob })
     await registerJobRoutes(api, { dataRoot })
   } else {
     api.get('/api/jobs/:id', (req, res) => {

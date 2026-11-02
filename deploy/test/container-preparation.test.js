@@ -102,6 +102,9 @@ function layoutConfiguration() {
   for (const name of ['apps/web/src/main.js', 'apps/web/src/view.vue', 'apps/server/src/main.js',
     'apps/worker/src/main.js', 'packages/shared/config.js', 'packages/shared/runtime/repos/jobs.js',
     'packages/automation/upload.js', 'packages/automation/lib/browser.js']) assert(allowed(name), name);
+  for (const name of ['skills/ruyi-audience/SKILL.md', 'skills/ruyi-audience/references/workflow.md']) assert(allowed(name, 'workspace'), name);
+  for (const name of ['skills/other/x.md', 'skills/ruyi-audience/a.js', 'skills/SKILL.md']) assert(!allowed(name, 'workspace'), name);
+  assert(!allowed('skills/ruyi-audience/SKILL.md', 'legacy'));
   assert(!allowed('server/index.js', 'workspace'));
   assert(!allowed('apps/server/src/main.js', 'legacy'));
   assert.throws(() => prepare({ files: [{ name: 'apps/server/src/main.js' }] }), /缺少必要的构建源码/);

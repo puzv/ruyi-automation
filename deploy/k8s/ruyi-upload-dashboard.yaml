@@ -45,6 +45,9 @@ spec:
               value: /data/upload
             - name: RUYI_HEADLESS
               value: "1"
+            # MCP 工具生成的登录地址、一次性上传/下载地址都基于此值；必须是同事电脑可访问的 HTTPS 地址，末尾不带“/”。
+            - name: RUYI_PUBLIC_URL
+              value: https://<平台对外地址>
             - name: RUYI_MAX_CONCURRENT_JOBS
               value: "2"
             # API 与自动推进共用同一进程，必须开启内嵌 Worker 才会认领并执行任务。

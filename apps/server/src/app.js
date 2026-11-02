@@ -5,6 +5,7 @@ const Fastify = require("fastify");
 const { LogController } = Fastify;
 const fastifyCookie = require("@fastify/cookie");
 const { guard } = require("./modules/auth/guard");
+const { registerApiTokenRoutes } = require("./modules/api-tokens/routes");
 const { registerAuthRoutes } = require("./modules/auth/routes");
 const { auditResponse } = require("./modules/audit/actions");
 const { registerLogsRoutes } = require("./modules/audit/routes");
@@ -33,6 +34,11 @@ function defaultLogger() {
   };
 }
 
+function isTransferRequest(request) {
+  return ['/api/transfer/upload/:ticket', '/api/transfer/download/:ticket'].includes(request.routeOptions?.url)
+    || request.url.startsWith('/api/transfer/');
+}
+
 function buildApp(options = {}) {
   const displayConfig = readDisplayConfig();
   const auth = options.auth ?? true;
@@ -57,8 +63,13 @@ function buildApp(options = {}) {
   if (auth) {
     app.decorateRequest("user", null);
     app.decorateRequest("sessionTokenHash", null);
+    app.decorateRequest("authMethod", null);
+    app.decorateRequest("apiTokenId", null);
     app.addHook("onRequest", guard);
+    app.register(require("./modules/mcp/routes").registerMcpRoutes, { uploadRoot: options.uploadRoot });
     app.register(registerAuthRoutes);
+    app.register(registerApiTokenRoutes);
+    app.register(require("./modules/skill/routes").registerSkillRoutes);
     app.register(registerAdminUsersRoutes);
     app.register(registerLogsRoutes);
     app.register(registerPlatformStateRoutes);
@@ -70,14 +81,18 @@ function buildApp(options = {}) {
   const hasWebBuild = fs.existsSync(indexFile) && fs.statSync(indexFile).isFile();
 
   app.addHook("onResponse", async (request, reply) => {
-    if (request.url.startsWith("/api/") && (request.method !== "GET" || reply.statusCode >= 400)) {
-      request.log.info(`${request.method} ${request.url} ${reply.statusCode} ${Math.round(reply.elapsedTime)}ms`);
+    if ((request.url.startsWith("/api/") || isTransferRequest(request)) && (request.method !== "GET" || reply.statusCode >= 400)) {
+      request.log.info(`${request.method} ${isTransferRequest(request) ? request.routeOptions.url : request.url} ${reply.statusCode} ${Math.round(reply.elapsedTime)}ms`);
     }
   });
 
   app.setErrorHandler((error, request, reply) => {
-    if (request.url.startsWith("/api/")) {
+    if (request.url.startsWith("/api/") || isTransferRequest(request)) {
       // API 自行返回 JSON，需显式记录异常以保留默认错误处理器的堆栈信息。
+      if (isTransferRequest(request)) {
+        if ((error.statusCode || 500) >= 500) request.log.error(`${request.method} ${request.routeOptions.url || '/api/transfer/'} 传输请求失败`);
+        return reply.code(error.statusCode || 500).send({ ok: false, message: "文件传输失败，请重新获取链接后重试" });
+      }
       if ((error.statusCode || 500) >= 500) request.log.error({ err: error }, error.message);
       return reply.code(error.statusCode || 500).send({ ok: false, message: error.message });
     }

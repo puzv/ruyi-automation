@@ -39,7 +39,7 @@ function sessionCookie(response) {
 
 async function clearTestData(db) {
   // 仅清理明确授权的测试库；业务操作记录仍然只追加。
-  for (const table of ['ruyi_user_sessions', 'ruyi_platform_states', 'ruyi_operation_logs', 'ruyi_users']) {
+  for (const table of ['ruyi_api_tokens', 'ruyi_user_sessions', 'ruyi_platform_states', 'ruyi_operation_logs', 'ruyi_users']) {
     await db.deleteFrom(table).execute();
   }
 }

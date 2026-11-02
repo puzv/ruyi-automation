@@ -50,6 +50,7 @@ function auditFromRequest(request, entry) {
     userId: request.user?.id ?? null,
     username: request.user?.username ?? null,
     ...entry,
+    ...(request.authMethod === 'token' ? { detail: { ...entry.detail, via: 'api_token', credentialId: request.apiTokenId } } : {}),
     ip: request.ip,
     userAgent: request.headers?.['user-agent'],
     requestId: entry.requestId ?? request.auditRequestId,

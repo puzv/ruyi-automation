@@ -37,6 +37,7 @@ async function main() {
     const rows = await db.selectFrom('ruyi_users').select('id').where('username', 'in', usernames).execute();
     if (rows.length) {
       const ids = rows.map((row) => row.id);
+      await db.deleteFrom('ruyi_api_tokens').where('user_id', 'in', ids).execute();
       await db.deleteFrom('ruyi_user_sessions').where('user_id', 'in', ids).execute();
       await db.deleteFrom('ruyi_users').where('id', 'in', ids).execute();
     }

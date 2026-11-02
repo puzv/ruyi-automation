@@ -63,7 +63,7 @@ async function clean(db) {
   const rows = await db.selectFrom('ruyi_users').select('id').where('username', 'in', names).execute()
   if (!rows.length) return
   const ids = rows.map((row) => row.id)
-  for (const table of ['ruyi_jobs', 'ruyi_user_sessions', 'ruyi_platform_states', 'ruyi_operation_logs']) {
+  for (const table of ['ruyi_api_tokens', 'ruyi_jobs', 'ruyi_user_sessions', 'ruyi_platform_states', 'ruyi_operation_logs']) {
     await db.deleteFrom(table).where('user_id', 'in', ids).execute()
   }
   await db.deleteFrom('ruyi_users').where('id', 'in', ids).execute()

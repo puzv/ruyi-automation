@@ -1,7 +1,7 @@
 # 项目规则（供 Codex 等编码助手阅读）
 
 本项目是如翼 / DataNexus 人群包自动化工具，正在从“单人本地工具”重构为“多人使用的平台”。
-重构计划与当前进度见 `docs/REFACTOR_PLAN.md`。每次任务只做任务说明里要求的范围，不要顺手改其他内容。
+当前进行中的计划见 `docs/MCP_PLAN.md`，单个任务说明见 `docs/tasks/`。每次任务只做任务说明里要求的范围，不要顺手改其他内容。
 
 ## 目录边界
 - `apps/server/src/main.js` 为 API 入口，业务代码放 `modules/`；`apps/worker/src/main.js` 为独立 Worker 入口，默认仍由 `npm start` 内嵌运行。

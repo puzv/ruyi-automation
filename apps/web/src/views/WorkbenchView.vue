@@ -451,6 +451,7 @@ async function cancelJob() {
         <a class="side-link" :class="{ active: page === '/platform-login' }" href="#/platform-login"><CircleUserRound :size="17" /> 平台登录</a>
         <a class="side-link" :class="{ active: page === '/jobs' }" href="#/jobs"><ListChecks :size="17" /> 我的任务</a>
         <a class="side-link" :class="{ active: page === '/logs' }" href="#/logs"><ListChecks :size="17" /> 我的操作记录</a>
+        <a class="side-link" :class="{ active: page === '/api-tokens' }" href="#/api-tokens"><ListChecks :size="17" /> API 令牌</a>
         <template v-if="currentUser.role === 'admin'">
           <a class="side-link" :class="{ active: page === '/admin/users' }" href="#/admin/users"><UsersRound :size="17" /> 用户管理</a>
           <a class="side-link" :class="{ active: page === '/admin/jobs' }" href="#/admin/jobs"><ListChecks :size="17" /> 全部任务</a>

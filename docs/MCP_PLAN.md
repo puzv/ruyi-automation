@@ -58,7 +58,7 @@
 
 ---
 
-## 三、阶段计划
+## 三、阶段计划（进度：阶段 0–5 已由 Claude 审核通过，待用户验收，见 docs/MCP_ACCEPTANCE.md）
 
 ### 阶段 0：准备（Claude 完成，无需验收）
 - 用户批准新增依赖 `@modelcontextprotocol/sdk`（及其 peer 依赖 `zod`）后，由 Claude 安装。

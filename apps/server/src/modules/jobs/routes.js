@@ -93,30 +93,13 @@ async function registerJobRoutes(app, { dataRoot }) {
     const { output, truncated } = await readJobLog(row, dataRoot, 5 * 1024 * 1024)
     return reply.type('text/plain; charset=utf-8').send(`${truncated ? '（日志过长，仅显示最后 5MB）\n' : ''}${output}`)
   })
-  const resultsFor = async (req, reply) => {
-    const row = await ownJob(req)
-    if (!row) { notFound(reply); return null }
-    if (row.task !== 'download' || !RESULT_STATUSES.includes(row.status)) {
-      reply.code(409).send({ ok: false, message: '仅已结束的下载结果任务可以下载 ZIP' }); return null
-    }
-    try {
-      const workspace = resolveWorkspace(req.user, dataRoot)
-      return { workspace, entries: resultEntries(workspace, row.id) }
-    } catch (error) {
-      reply.code(409).send({ ok: false, message: error.code === 'ENOENT'
-        ? '该任务没有结果归档（旧任务不支持重新下载）'
-        : /^(?:结果|本次任务)/.test(error.message) && !error.code ? error.message
-          : '本次任务结果不可下载，归档不完整' })
-      return null
-    }
-  }
   app.get('/api/jobs/:id/results', async (req, reply) => {
-    const result = await resultsFor(req, reply)
+    const result = await resultsFor(app, req, reply, dataRoot)
     if (!result) return
     return { ok: true, count: result.entries.files.length, size: result.entries.size }
   })
   app.get('/api/jobs/:id/results.zip', async (req, reply) => {
-    const result = await resultsFor(req, reply)
+    const result = await resultsFor(app, req, reply, dataRoot)
     if (!result) return
     const stream = zipStream(result.workspace, req.params.id, result.entries)
     reply.raw.once('close', () => stream.destroy())
@@ -143,4 +126,22 @@ async function registerJobRoutes(app, { dataRoot }) {
   })
 }
 
-module.exports = { registerJobRoutes }
+async function resultsFor(app, req, reply, dataRoot) {
+  const row = await jobs.getJobForUser(app.db, req.params.id, req.user.id)
+  if (!row) { reply.code(404).send({ ok: false, message: '任务不存在' }); return null }
+  if (row.task !== 'download' || !RESULT_STATUSES.includes(row.status)) {
+    reply.code(409).send({ ok: false, message: '仅已结束的下载结果任务可以下载 ZIP' }); return null
+  }
+  try {
+    const workspace = resolveWorkspace(req.user, dataRoot)
+    return { workspace, entries: resultEntries(workspace, row.id) }
+  } catch (error) {
+    reply.code(409).send({ ok: false, message: error.code === 'ENOENT'
+      ? '该任务没有结果归档（旧任务不支持重新下载）'
+      : /^(?:结果|本次任务)/.test(error.message) && !error.code ? error.message
+        : '本次任务结果不可下载，归档不完整' })
+    return null
+  }
+}
+
+module.exports = { registerJobRoutes, resultsFor }

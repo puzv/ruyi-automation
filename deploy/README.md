@@ -54,3 +54,10 @@ node --check scripts/build-context.js
 测试只建立人工 Git 仓库并运行假 Docker、假桌面和假应用命令，不启动真实 Docker、Chromium或数据库，不读取真实环境、登录态或用户数据。人工 Git ref 通过 plumbing 创建对象，不执行 `git commit`。覆盖新旧布局的 ref/工作区、每个必需 manifest 与入口缺失、路径过滤、符号链接、敏感文件读取卫兵、失败清理、信号处理及桌面服务监督。桌面测试在 macOS 使用现有 python3 模拟 Linux `setsid`，不安装依赖。
 
 真实基础镜像包安装、前端镜像内构建、非 root 的 PVC 写权限、浏览器扫码链路和实际容器停止行为，均留待下一步验证。
+
+## MCP 接入上线检查
+
+1. 在远程库执行迁移 007（`ruyi_api_tokens`）、008（`ruyi_transfer_tickets`）：先运行 `node scripts/migrate.js plan` 核对 SQL，再由负责人执行 `up`（需输入库名确认）。
+2. 设置 `RUYI_PUBLIC_URL`，填写同事电脑可访问的 HTTPS 地址且末尾不带 `/`。
+3. 网关或 Ingress 放行 `/mcp` 与 `/api/transfer/`；读超时至少 60 秒（`wait_for_job` 最长 50 秒）；请求体上限不低于预期最大上传文件（应用自身单文件上限 1GB）；`/mcp` 透传 `Authorization` 请求头。
+4. 上线后自检：`curl -s -o /dev/null -w '%{http_code}' -X POST https://<地址>/mcp` 应返回 401；在网页生成令牌后按 `docs/MCP_USAGE.md` 接入并调用 `get_overview`。

@@ -5,6 +5,7 @@ export const actionLabels = {
   'job.start': '启动任务', 'job.cancel': '取消任务', 'job.finish': '任务结束', 'platform.login_open': '打开平台登录',
   'platform.state_expired': '平台登录已过期',
   'platform.login_start': '开始平台登录', 'platform.login': '平台登录', 'platform.logout': '清除平台登录',
+  'token.create': '生成 API 令牌', 'token.revoke': '吊销 API 令牌', 'job.results_download': '下载任务结果',
   'profile.release': '释放 Profile', 'runtime.mode_change': '切换运行模式',
 }
 export const taskLabels = { upload: '上传文件', create: '创建人群', analyse: '人群洞悉', download: '下载结果' }
@@ -38,7 +39,7 @@ export function jobDuration(job, now = Date.now()) {
   return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`
 }
 const reasonLabels = { unknown_user: '用户名不存在', wrong_password: '密码错误', locked: '账号锁定', disabled: '账号停用', invalid_request: '请求无效' }
-const targetLabels = { user: '用户', file_batch: '文件批次', job: '任务' }
+const targetLabels = { user: '用户', file_batch: '文件批次', job: '任务', api_token: 'API 令牌' }
 
 export function formatTime(value) {
   if (!value) return '—'
@@ -56,12 +57,19 @@ export function logTarget(log) {
   return [type, log.targetId].filter((part) => part != null && part !== '').join(' · ') || '—'
 }
 export function logDescription(log) {
+  const via = log.detail?.via
+  const suffix = via === 'api_token' ? '（AI 工具）' : via === 'transfer_ticket' ? '（AI 工具 · 一次性链接）' : ''
+  return describeLog(log) + suffix
+}
+function describeLog(log) {
   const detail = log.detail || {}
   if (log.action === 'auth.login' && log.result === 'failure') {
     const reason = reasonLabels[detail.reason] || detail.reason
     return [log.errorMessage, reason].filter(Boolean).join('；') || '—'
   }
   if (log.result === 'failure' && log.errorMessage) return log.errorMessage
+  if (log.action === 'token.create') return `名称：${detail.name ?? '—'}，有效期 ${detail.expiresInDays ?? '未知'} 天`
+  if (log.action === 'job.results_download') return '下载结果 ZIP'
   if (log.action === 'file.import') return `导入 ${detail.count ?? 0} 个，跳过 ${detail.skipped ?? 0} 个`
   const task = taskLabels[detail.task] || detail.task
   if (log.action === 'job.finish') {

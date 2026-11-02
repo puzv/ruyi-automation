@@ -38,9 +38,21 @@ async function auditResponse(request, reply, payload) {
       entry.action = { disable: 'admin.user_disable', enable: 'admin.user_enable', 'reset-password': 'admin.password_reset' }[route.split('/').pop()];
       entry.targetType = 'user'; entry.targetId = request.auditTargetUsername ?? null;
       break;
+    case '/api/api-tokens':
+      entry.action = 'token.create'; entry.targetType = 'api_token';
+      entry.targetId = response.item?.id;
+      entry.detail = { name: typeof request.body?.name === 'string' ? request.body.name.trim().slice(0, 64) : null, expiresInDays: [30, 90, 365].includes(request.body?.expiresInDays) ? request.body.expiresInDays : null };
+      break;
+    case '/api/api-tokens/:id/revoke':
+      entry.action = 'token.revoke'; entry.targetType = 'api_token'; entry.targetId = request.params.id;
+      break;
+    case '/api/transfer/upload/:ticket':
+      if (!request.user) return payload;
     case '/api/import-folder':
       entry.action = 'file.import'; entry.targetType = 'file_batch';
-      entry.detail = request.auditImport || { count: 0, skipped: 0, files: [] };
+      entry.detail = { ...(request.auditImport || { count: 0, skipped: 0, files: [] }),
+        ...(route === '/api/transfer/upload/:ticket' ? { via: 'transfer_ticket' } : {}) };
+      if (!success && route === '/api/transfer/upload/:ticket') entry.errorMessage = '文件导入失败，请重新获取链接';
       break;
     case '/api/run/:task':
       entry.action = 'job.start'; entry.targetType = 'job'; entry.targetId = response.id;

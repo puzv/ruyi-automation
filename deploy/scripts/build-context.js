@@ -36,6 +36,7 @@ function allowed(name, layout) {
   if (layout !== 'workspace' && (legacyFiles.has(name) || /^(?:lib|server)\/.+\.js$/.test(name) || /^web\/(?:package(?:-lock)?\.json|index\.html|vite\.config\.js|src\/.+\.(?:js|vue|css|svg|png|jpe?g|webp|woff2?))$/.test(name))) return true;
   if (layout === 'legacy') return false;
   if (/^(?:apps\/(?:web|server|worker)|packages\/(?:automation|shared))\/package\.json$/.test(name)) return true;
+  if (/^skills\/ruyi-audience\/.+\.md$/.test(name)) return true;
   if (/^apps\/(?:server|worker)\/src\/.+\.js$/.test(name)) return true;
   if (/^packages\/automation\/(?:[^/]+\.js|lib\/.+\.js)$/.test(name)) return true;
   if (/^packages\/shared\/(?:[^/]+\.js|runtime\/.+\.js)$/.test(name)) return true;

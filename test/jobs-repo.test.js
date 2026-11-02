@@ -12,6 +12,7 @@ async function clearTestData(db) {
   if (!rows.length) return;
   const ids = rows.map((row) => row.id);
   await db.deleteFrom("ruyi_jobs").where("user_id", "in", ids).execute();
+  await db.deleteFrom("ruyi_api_tokens").where("user_id", "in", ids).execute();
   await db.deleteFrom("ruyi_users").where("id", "in", ids).execute();
 }
 
