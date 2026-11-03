@@ -27,11 +27,12 @@ function mount(relative, labels, names, api, props = {}) {
     calls.push({ url, method });
     const result = await api(url, method, options);
     const data = JSON.parse(JSON.stringify(result.data ?? result));
-    return { ok: (result.httpStatus || 200) < 400, async json() { return data; } };
+    return { ok: (result.httpStatus || 200) < 400, async json() { return data; }, async text() { return result.text || ''; } };
   };
   const icons = descriptor.scriptSetup.content.match(/import \{([\s\S]*?)\} from 'lucide-vue-next'/)?.[1].split(',').map((name) => name.trim()).filter(Boolean) || [];
   const sandbox = {
-    ...vue, ...labels, ...Object.fromEntries(icons.map((name) => [name, {}])), URLSearchParams,
+    ...vue, ...labels, ...Object.fromEntries(icons.map((name) => [name, {}])), URLSearchParams, AbortController,
+    document: { activeElement: { focus() {} } },
     Date: class extends Date { static now() { return time; } },
     onMounted(fn) { mounted.push(fn); }, onBeforeUnmount(fn) { unmounted.push(fn); },
     defineProps: () => ({ currentUser: { id: 7 }, page: '/', ...props }), defineEmits() {}, defineExpose() {},
@@ -463,6 +464,14 @@ async function testTables(labels) {
 }
 
 async function main() {
+  await testLogDialog();
+  const workbenchTemplate = readComponent('views/WorkbenchView.vue').descriptor.template.content;
+  assert.ok(!workbenchTemplate.includes('WORKSPACE SNAPSHOT'), '不再显示当前状态模块');
+  assert.ok(!workbenchTemplate.includes('queue-panel'), '不再显示队列统计卡片');
+  assert.ok(workbenchTemplate.includes('class="auto-panel"'), '保留自动推进');
+  assert.ok(workbenchTemplate.includes('aria-label="任务反馈"'), '保留独立任务反馈');
+  assert.ok(workbenchTemplate.includes('{{ notice }}'), '操作提示仍可见');
+  assert.ok(workbenchTemplate.includes('取消任务') && workbenchTemplate.includes('class="job-log"'), '保留取消和日志');
   const labels = await import('../apps/web/src/labels.js');
   assert.deepEqual({ ...labels.taskLabels }, { upload: '上传文件', create: '创建人群', analyse: '人群洞悉', download: '下载结果' });
   assert.deepEqual({ ...labels.jobStatusLabels }, { queued: '排队中', running: '运行中', succeeded: '成功', failed: '失败', cancelled: '已取消', interrupted: '已中断' });
@@ -490,6 +499,44 @@ async function main() {
   app.sandbox.location.hash = '#/admin/jobs'; app.view.syncPage();
   assert.equal(app.view.page.value, '/admin/jobs');
   console.log('任务前端编译、状态文案、队列恢复、取消、分页筛选与路由权限测试通过。');
+}
+async function testLogDialog() {
+  const names = ['loadLog', 'output', 'error', 'loading', 'query', 'lines', 'matches', 'visibleLines', 'logUrl', 'lineTone'];
+  let result = { text: '开始处理\nWARN 正在重试\nERROR 任务失败\n<script>不应执行</script>' };
+  const page = mount('components/JobLogDialog.vue', {}, names, () => result, { job: { id: 'job/a', task: 'upload' } });
+  await page.start();
+  assert.equal(page.calls[0].url, '/api/jobs/job%2Fa/log');
+  assert.equal(page.view.lines.value.length, 4);
+  page.view.query.value = 'error';
+  assert.equal(page.view.matches.value.length, 1);
+  assert.equal(page.view.visibleLines.value[0].number, 3);
+  assert.equal(page.view.lineTone('ERROR 任务失败'), 'log-line-error');
+  assert.equal(page.view.lineTone('WARN 重试'), 'log-line-warning');
+  page.view.query.value = '找不到';
+  assert.equal(page.view.visibleLines.value.length, 0);
+  page.view.query.value = '';
+  result = { text: Array.from({ length: 2500 }, (_, i) => `第 ${i} 行`).join('\n') };
+  await page.view.loadLog();
+  assert.equal(page.view.visibleLines.value.length, 2000);
+  assert.equal(page.view.visibleLines.value[0].number, 501);
+  result = { httpStatus: 403, message: '无权查看日志' };
+  await page.view.loadLog();
+  assert.equal(page.view.error.value, '无权查看日志');
+  assert.equal(page.view.loading.value, false);
+  result = { text: '' };
+  await page.view.loadLog();
+  assert.equal(page.view.error.value, '');
+  assert.equal(page.view.lines.value.length, 0);
+  page.unmount();
+  const gate = deferred();
+  const late = mount('components/JobLogDialog.vue', {}, names, () => gate.promise, { job: { id: 'late' } });
+  const pending = late.view.loadLog(); late.unmount();
+  gate.resolve({ text: '不应在关闭后更新' }); await pending;
+  assert.equal(late.view.output.value, '');
+  const template = readComponent('components/JobLogDialog.vue').descriptor.template.content;
+  assert.ok(!template.includes('v-html'), '日志仅作为文本展示');
+  assert.ok(template.includes('@close="emit(\'close\')"'), '原生对话框支持 Escape 关闭');
+  assert.ok(readComponent('components/JobsTable.vue').descriptor.template.content.includes('@click="logJob = item"'));
 }
 module.exports = main;
 if (require.main === module) main().catch((error) => { console.error('任务前端测试失败：', error); process.exitCode = 1; });

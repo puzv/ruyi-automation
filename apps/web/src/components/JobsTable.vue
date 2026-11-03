@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { requestJson } from '../api.js'
 import { observeResultJob, downloadJobResults } from '../result-download.js'
 import { formatTime, isActiveJob, jobDuration, jobStatusLabels, taskLabels } from '../labels.js'
+import JobLogDialog from './JobLogDialog.vue'
 
 const props = defineProps({ admin: Boolean })
 const filters = reactive({ username: '', status: '' })
@@ -15,6 +16,7 @@ const error = ref('')
 const cancelling = ref({})
 const downloading = ref({})
 const downloadNotice = ref('')
+const logJob = ref(null)
 const now = ref(Date.now())
 const pages = computed(() => Math.max(1, Math.ceil(total.value / 20)))
 let timer
@@ -102,11 +104,12 @@ onBeforeUnmount(() => { disposed = true; window.clearTimeout(timer) })
           <td class="nowrap">{{ formatTime(item.startedAt) }}</td>
           <td class="nowrap">{{ jobDuration(item, now) }}</td>
           <td class="log-description">{{ item.errorMessage || '—' }}<span v-if="isActiveJob(item) && item.cancelRequested"> 正在停止任务…</span></td>
-          <td><div class="row-actions"><a class="secondary-button job-log-link" :href="`/api/jobs/${encodeURIComponent(item.id)}/log`" target="_blank" rel="noopener noreferrer">查看日志</a><button v-if="!admin && item.task === 'download' && ['succeeded', 'failed'].includes(item.status) && item.resultFiles" class="secondary-button" :disabled="downloading[item.id]" @click="redownload(item)">重新下载</button><button v-if="!admin && isActiveJob(item)" class="secondary-button" :disabled="loading || cancelling[item.id] || item.cancelRequested" @click="cancelJob(item)">取消</button></div></td>
+          <td><div class="row-actions"><button class="secondary-button" type="button" @click="logJob = item">查看日志</button><button v-if="!admin && item.task === 'download' && ['succeeded', 'failed'].includes(item.status) && item.resultFiles" class="secondary-button" :disabled="downloading[item.id]" @click="redownload(item)">重新下载</button><button v-if="!admin && isActiveJob(item)" class="secondary-button" :disabled="loading || cancelling[item.id] || item.cancelRequested" @click="cancelJob(item)">取消</button></div></td>
         </tr>
         <tr v-if="!items.length"><td class="empty-state" :colspan="admin ? 8 : 7">{{ loading ? '正在加载…' : '暂无任务' }}</td></tr>
       </tbody>
     </table>
   </div>
   <div class="pagination"><button class="secondary-button" :disabled="loading || page <= 1" @click="load(page - 1)">上一页</button><span>第 {{ page }} / {{ pages }} 页，共 {{ total }} 条</span><button class="secondary-button" :disabled="loading || page >= pages" @click="load(page + 1)">下一页</button></div>
+  <JobLogDialog v-if="logJob" :key="logJob.id" :job="logJob" @close="logJob = null" />
 </template>

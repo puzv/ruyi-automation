@@ -2,11 +2,8 @@
 import {
   ArrowUpFromLine,
   BarChart3,
-  CheckCircle2,
   ChevronRight,
   CircleHelp,
-  ChevronDown,
-  ChevronUp,
   Download,
   FolderOpen,
   Layers3,
@@ -43,9 +40,6 @@ let disposed = false
 const workspaceStatus = ref('等待操作')
 const statusCounts = ref({ rawCount: 0, createCount: 0, analyseCount: 0, doneCount: 0, idfaPending: 0, oaidPending: 0, pnPending: 0, insightPending: 0, resultPending: 0, createNames: [] })
 const jobLog = computed(() => currentJob.value?.output || '')
-const createExpanded = ref(true)
-const insightExpanded = ref(true)
-const downloadExpanded = ref(true)
 const platformState = ref({ status: 'none', expiresHintAt: null })
 const platformStateError = ref('')
 const platformLoginRequired = ref(false)
@@ -86,13 +80,6 @@ const actions = [
   { label: taskLabels.analyse, hint: '创建洞察分析任务', icon: BarChart3, tone: 'gold' },
   { label: taskLabels.download, hint: '保存分析结果文件', icon: Download, tone: 'violet' },
   { label: '检测当前状态', hint: '查看平台处理进度', icon: RefreshCw, tone: 'teal' },
-]
-
-const queues = [
-  { label: '待上传文件', key: 'rawCount', unit: '个', icon: ArrowUpFromLine },
-  { label: '待创建人群', key: 'createCount', unit: '个', icon: UsersRound },
-  { label: '待洞悉人群', key: 'analyseCount', unit: '个', icon: BarChart3 },
-  { label: '待下载结果', key: 'doneCount', unit: '个', icon: Download },
 ]
 
 const taskByLabel = Object.fromEntries(Object.entries(taskLabels).map(([task, label]) => [label, task]))
@@ -521,30 +508,9 @@ async function cancelJob() {
         <a v-if="autoAdvance.phase === 'loginRequired'" class="platform-login-link" href="#/platform-login">前往平台登录</a>
       </div>
 
-      <section id="status" class="status-section">
-        <div class="section-heading"><div><p class="section-kicker">WORKSPACE SNAPSHOT</p><h3>当前状态</h3></div></div>
-        <div class="status-layout">
-          <div class="queue-panel">
-            <template v-for="queue in queues" :key="queue.label">
-            <button class="queue-row queue-toggle" :class="{ expanded: (queue.key === 'createCount' && createExpanded) || (queue.key === 'analyseCount' && insightExpanded) || (queue.key === 'doneCount' && downloadExpanded) }" type="button" @click="queue.key === 'createCount' ? (createExpanded = !createExpanded) : queue.key === 'analyseCount' ? (insightExpanded = !insightExpanded) : queue.key === 'doneCount' && (downloadExpanded = !downloadExpanded)">
-              <span class="queue-icon"><component :is="queue.icon" :size="17" /></span><span class="queue-label">{{ queue.label }}</span><strong>{{ statusCounts[queue.key] }}</strong><small>{{ queue.unit }}</small>
-              <component v-if="queue.key === 'createCount' || queue.key === 'analyseCount' || queue.key === 'doneCount'" :is="(queue.key === 'createCount' ? createExpanded : queue.key === 'analyseCount' ? insightExpanded : downloadExpanded) ? ChevronUp : ChevronDown" class="queue-chevron" :size="15" />
-            </button>
-            <div v-if="queue.key === 'createCount' && createExpanded" class="queue-details">
-              <div class="queue-detail"><span>IDFA 平台处理中</span><strong>{{ statusCounts.idfaPending }}</strong><small>个</small></div>
-              <div class="queue-detail"><span>OAID 平台处理中</span><strong>{{ statusCounts.oaidPending }}</strong><small>个</small></div>
-              <div class="queue-detail"><span>PN 平台处理中</span><strong>{{ statusCounts.pnPending }}</strong><small>个</small></div>
-            </div>
-            <div v-if="queue.key === 'analyseCount' && insightExpanded" class="queue-details">
-              <div class="queue-detail"><span>人群包平台处理中</span><strong>{{ statusCounts.insightPending }}</strong><small>个</small></div>
-            </div>
-            <div v-if="queue.key === 'doneCount' && downloadExpanded" class="queue-details">
-              <div class="queue-detail"><span>洞悉结果未就绪</span><strong>{{ statusCounts.resultPending }}</strong><small>个</small></div>
-            </div>
-            </template>
-          </div>
-          <div class="ready-panel"><div class="ready-icon"><CheckCircle2 :size="22" /></div><div><strong>{{ notice }}</strong><a v-if="platformLoginRequired" class="platform-login-link" href="#/platform-login">前往平台登录</a><p>选择一个操作以开始本次任务</p></div></div>
-        </div>
+      <section v-if="currentJob || notice !== '等待操作' || downloadNotice" class="task-feedback" aria-label="任务反馈">
+        <p v-if="notice !== '等待操作'" role="status">{{ notice }}</p>
+        <a v-if="platformLoginRequired" class="platform-login-link" href="#/platform-login">前往平台登录</a>
         <div v-if="currentJob" class="job-toolbar">
           <label v-if="jobs.length > 1">查看任务 <select v-model="jobId" @change="selectJob"><option v-for="job in jobs" :key="job.id" :value="job.id">{{ taskLabels[job.task] }} · {{ jobStatusLabels[job.status] }} · {{ job.id.slice(0, 8) }}</option></select></label>
           <span role="status">{{ jobNotice(currentJob) }}</span>
