@@ -6,17 +6,18 @@ MCP 配合 ruyi-audience Skill 提供完整流程指引。当前提供 10 个工
 2. 在 Claude Code 中接入（替换平台地址和令牌）：
 
    ```sh
-   claude mcp add --transport http --scope user ruyi <平台地址>/mcp --header "Authorization: Bearer <令牌>"
+   claude mcp remove ruyi --scope user 2>/dev/null; claude mcp add --transport http --scope user ruyi '<平台地址>/mcp' --header 'Authorization: Bearer <令牌>'
    ```
 
 3. 在 Codex 中接入：
 
    ```sh
-   export RUYI_TOKEN='<令牌>'
-   codex mcp add ruyi --url <平台地址>/mcp --bearer-token-env-var RUYI_TOKEN
+   codex mcp remove ruyi 2>/dev/null; mkdir -p ~/.codex && printf '\n[mcp_servers.ruyi]\nurl = "%s"\nhttp_headers = { Authorization = "Bearer %s" }\n' '<平台地址>/mcp' '<令牌>' >> ~/.codex/config.toml && chmod 600 ~/.codex/config.toml
    ```
 
-   启动 Codex 的环境中也必须有 `RUYI_TOKEN`；平台地址末尾不要重复添加斜杠。
+   命令只需执行一次，配置会永久保存在本机；Codex 会将令牌写入 `~/.codex/config.toml`。令牌到期或吊销后，生成新令牌并重新执行同一条命令即可。平台地址末尾不要重复添加斜杠。
+
+   检查是否接入成功：`claude mcp list` 或 `codex mcp list` 中出现 ruyi。
 4. 在 agent 中问：“如翼平台现在进行到哪一步了？”。应先获得工作区概览，再按建议查看任务。
 
 平台登录只能由用户本人在网页完成。若工具提示未登录，请打开返回的 `/#/platform-login` 地址完成登录，再继续；不要让 agent 反复重试。平台检查会访问外部平台，较慢，两次检查至少间隔 2 分钟。等待任务单次最多 50 秒，未结束可以再次等待。
@@ -32,14 +33,12 @@ MCP 配合 ruyi-audience Skill 提供完整流程指引。当前提供 10 个工
 
 ```sh
 # Claude Code
-mkdir -p "$HOME/.claude/skills"
-unzip "$HOME/Downloads/ruyi-audience.zip" -d "$HOME/.claude/skills/"
+mkdir -p ~/.claude/skills && unzip -o ~/Downloads/ruyi-audience.zip -d ~/.claude/skills/
 ```
 
 ```sh
 # Codex
-mkdir -p "$HOME/.codex/skills"
-unzip "$HOME/Downloads/ruyi-audience.zip" -d "$HOME/.codex/skills/"
+mkdir -p ~/.codex/skills && unzip -o ~/Downloads/ruyi-audience.zip -d ~/.codex/skills/
 ```
 
 ZIP 内顶层为 `ruyi-audience/`。最终文件应是 `~/.claude/skills/ruyi-audience/SKILL.md` 或 `~/.codex/skills/ruyi-audience/SKILL.md`，不要额外嵌套一层目录。重新进入客户端会话加载 Skill；安装 Skill 不代替 MCP 接入。

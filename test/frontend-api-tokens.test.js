@@ -7,7 +7,7 @@ const webRequire = createRequire(require.resolve('@ruyi/web/package.json'));
 const vue = webRequire('vue');
 const { parse, compileScript, compileTemplate } = webRequire('@vue/compiler-sfc');
 
-function mount() {
+function mount({ secure = true, clipboard = true, fallback = true, clipboardFails = false } = {}) {
   const filename = path.resolve(__dirname, '../apps/web/src/views/ApiTokensView.vue');
   const { descriptor } = parse(fs.readFileSync(filename, 'utf8'), { filename });
   compileScript(descriptor, { id: 'api-tokens-test' });
@@ -15,11 +15,18 @@ function mount() {
   assert.deepEqual(template.errors, []);
   const mounted = [], unmounted = [], calls = [], copied = [];
   let confirm = true;
+  const temporary = [];
+  const document = {
+    body: { appendChild(node) { temporary.push(node); } },
+    createElement() { return { style: {}, select() { this.selected = true; }, remove() { temporary.splice(temporary.indexOf(this), 1); } }; },
+    execCommand(command) { assert.equal(command, 'copy'); assert.equal(temporary[0].selected, true); assert.equal(temporary[0].readOnly, true); copied.push(temporary[0].value); return fallback; },
+  };
   const item = { id: 12, name: '我的 AI 工具', displayPrefix: 'ruyi_pat_abcd', status: 'active', createdAt: '2026-10-30T00:00:00Z', expiresAt: '2027-01-28T00:00:00Z' };
   const sandbox = {
     ...vue,
     onMounted(fn) { mounted.push(fn); }, onBeforeUnmount(fn) { unmounted.push(fn); },
-    window: { location: { origin: 'https://ruyi.example.test:8443' }, confirm() { return confirm; } }, navigator: { clipboard: { async writeText(value) { copied.push(value); } } },
+    document,
+    window: { isSecureContext: secure, location: { origin: 'https://ruyi.example.test:8443' }, confirm() { return confirm; } }, navigator: { clipboard: clipboard ? { async writeText(value) { if (clipboardFails) throw new Error('拒绝复制'); copied.push(value); } } : undefined },
     formatTime(value) { return value || '—'; },
     async requestJson(url, options = {}) {
       calls.push({ url, ...options });
@@ -29,9 +36,9 @@ function mount() {
     },
   };
   const source = descriptor.scriptSetup.content.replace(/^import[^\n]+\n/gm, '');
-  const view = vm.runInNewContext(`${source}\n;({ items, form, secret, error, notice, loading, busy, statusLabels, formatTime, createToken, copyToken, revokeToken, connectionCommand, copyConnection })`, sandbox, { filename });
+  const view = vm.runInNewContext(`${source}\n;({ items, form, secret, error, notice, loading, busy, statusLabels, formatTime, createToken, copyToken, revokeToken, connectionCommand, copyConnection, copyText, copySkill, skillCommand, textFields })`, sandbox, { filename });
   const render = new Function('Vue', template.code)({ ...vue, withDirectives: (node) => node });
-  return { view, calls, copied, async start() { await Promise.all(mounted.map((fn) => fn())); }, unmount() { unmounted.forEach((fn) => fn()); }, confirm(value) { confirm = value; }, render() { return render(vue.proxyRefs(view), []); } };
+  return { view, calls, copied, temporary, async start() { await Promise.all(mounted.map((fn) => fn())); }, unmount() { unmounted.forEach((fn) => fn()); }, confirm(value) { confirm = value; }, render() { return render(vue.proxyRefs(view), []); } };
 }
 
 async function main() {
@@ -64,6 +71,19 @@ async function main() {
     assert.ok(page.copied.at(-1).includes('ruyi_pat_just-created-secret'));
     assert.ok(page.copied.at(-1).includes('https://ruyi.example.test:8443/mcp'));
   }
+  assert.match(page.copied.at(-2), /^claude mcp remove ruyi --scope user/);
+  assert.match(page.copied.at(-1), /http_headers = \{ Authorization = "Bearer %s" \}/);
+  const format = page.copied.at(-1).match(/printf '([^']+)'/)[1];
+  const config = require('node:child_process').spawnSync('printf', [format, 'https://ruyi.example.test:8443/mcp', page.view.secret.value], { encoding: 'utf8' });
+  assert.equal(config.status, 0);
+  assert.ok(config.stdout.includes('http_headers = { Authorization = "Bearer ruyi_pat_just-created-secret" }'));
+  assert.match(page.copied.at(-1), /chmod 600/);
+  assert.ok(!page.copied.at(-1).includes('RUYI_TOKEN'));
+  for (const client of ['claude', 'codex']) {
+    await page.view.copySkill(client);
+    assert.equal(page.copied.at(-1), page.view.skillCommand(client));
+    assert.match(page.copied.at(-1), /unzip -o/);
+  }
   assert.ok(!page.view.connectionCommand('claude').includes('ruyi_pat_just-created-secret'));
   page.confirm(false);
   await page.view.revokeToken(page.view.items.value[0]);
@@ -85,6 +105,25 @@ async function main() {
   assert.match(refreshed.view.error.value, /名称/);
   assert.equal(refreshed.calls.length, 1);
   refreshed.unmount();
+  const http = mount({ secure: false, clipboard: false });
+  assert.equal(await http.view.copyText('HTTP 复制'), true);
+  assert.deepEqual(http.copied, ['HTTP 复制']);
+  assert.equal(http.temporary.length, 0);
+  const denied = mount({ secure: false, clipboard: false, fallback: false });
+  assert.equal(await denied.view.copyText('失败'), false);
+  for (const field of ['token', 'claude', 'codex', 'claudeSkill', 'codexSkill']) {
+    let focused = false, selected = false;
+    denied.view.textFields[field] = { focus() { focused = true; }, select() { selected = true; } };
+    if (field === 'token') await denied.view.copyToken();
+    else if (field.endsWith('Skill')) await denied.view.copySkill(field.replace('Skill', ''));
+    else await denied.view.copyConnection(field);
+    assert.equal(focused && selected, true);
+    assert.match(JSON.stringify(denied.render()), /浏览器不允许自动复制，请选中下方文字后按 ⌘C \/ Ctrl\+C 复制/);
+  }
+  assert.equal(denied.temporary.length, 0);
+  const rejected = mount({ clipboardFails: true });
+  assert.equal(await rejected.view.copyText('回退'), true);
+  assert.equal(rejected.temporary.length, 0);
   console.log('API 令牌前端创建、显示、复制、列表与吊销测试通过。');
 }
 module.exports = main;
