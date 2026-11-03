@@ -111,7 +111,7 @@ async function main() {
     for (const [method, url] of [
       ['GET', '/api/admin/users'], ['GET', '/api/api-tokens'], ['POST', '/api/api-tokens'],
       ['POST', `/api/api-tokens/${item.id}/revoke`], ['POST', '/api/auth/change-password'],
-      ['POST', '/api/runtime-mode'], ['POST', '/api/platform-login'], ['GET', '/api/runtime-mode'],
+      ['POST', '/api/platform-login'],
       ['GET', '/api/%61dmin/users'],
     ]) {
       const response = await request(method, url, { authorization: `Bearer ${admin.token}` }, {});

@@ -34,6 +34,7 @@ function multipart(files) {
 
 async function main() {
   const app = buildApp({ auth: false, logger: false, webDist: path.join(tempDir, 'missing-dist') });
+  app.post('/api/test-json', (_req, reply) => reply.send({ ok: true }));
   try {
     fs.mkdirSync(path.join(tempDir, 'raw'));
     fs.mkdirSync(path.join(tempDir, 'oaid', 'done'), { recursive: true });
@@ -49,26 +50,13 @@ async function main() {
       doneCount: 1, analyseCount: 0, workspaceStatus: '等待创建人群包',
     });
 
-    const runtime = await app.inject('/api/runtime-mode');
-    assert.equal(typeof runtime.json().headless, 'boolean');
-    const updated = await app.inject({ method: 'POST', url: '/api/runtime-mode', payload: { headless: false } });
-    assert.deepEqual(updated.json(), { ok: true, headless: false });
-    assert.equal((await app.inject('/api/runtime-mode')).json().headless, false);
-    const invalidMode = await app.inject({ method: 'POST', url: '/api/runtime-mode', payload: { headless: 'x' } });
-    assert.equal(invalidMode.statusCode, 400);
-    assert.deepEqual(invalidMode.json(), { ok: false, message: 'headless 必须是布尔值' });
-
     for (const [method, url] of [
-      ['POST', '/api/login-open'], ['POST', '/api/profile-release'], ['GET', '/api/login-status'],
+      ['GET', '/api/runtime-mode'], ['POST', '/api/runtime-mode'], ['POST', '/api/login-open'], ['POST', '/api/profile-release'], ['GET', '/api/login-status'],
     ]) {
       const response = await app.inject({ method, url });
       assert.equal(response.statusCode, 404);
       assert.deepEqual(response.json(), { ok: false, message: '接口不存在' });
     }
-    const emptyJson = await app.inject({ method: 'POST', url: '/api/runtime-mode', headers: { 'content-type': 'application/json' } });
-    assert.equal(emptyJson.statusCode, 400);
-    assert.deepEqual(emptyJson.json(), { ok: false, message: 'headless 必须是布尔值' });
-
     const content = '测试文件内容\nabc';
     const upload = await app.inject({ method: 'POST', url: '/api/import-folder', ...multipart([
       { filename: '测试_idfa.txt', content }, { filename: 'notes.md', content: '忽略' },
@@ -175,18 +163,17 @@ async function main() {
       state.jobs.delete('t1');
     }
 
-    const badJson = await app.inject({ method: 'POST', url: '/api/runtime-mode', headers: { 'content-type': 'application/json' }, payload: '{bad' });
+    const badJson = await app.inject({ method: 'POST', url: '/api/test-json', headers: { 'content-type': 'application/json' }, payload: '{bad' });
     assert.equal(badJson.statusCode, 400);
     assert.equal(badJson.json().ok, false);
-    const oversizedJson = await app.inject({ method: 'POST', url: '/api/runtime-mode', payload: { headless: true, padding: largeContent } });
+    const oversizedJson = await app.inject({ method: 'POST', url: '/api/test-json', payload: { headless: true, padding: largeContent } });
     assert.equal(oversizedJson.statusCode, 413);
     assert.equal(oversizedJson.json().ok, false);
     const allowedPayload = { headless: true, padding: 'x'.repeat(1024 * 1024 - 128) };
     assert.ok(Buffer.byteLength(JSON.stringify(allowedPayload)) < 1024 * 1024);
-    const allowedJson = await app.inject({ method: 'POST', url: '/api/runtime-mode', payload: allowedPayload });
+    const allowedJson = await app.inject({ method: 'POST', url: '/api/test-json', payload: allowedPayload });
     assert.equal(allowedJson.statusCode, 200);
-    assert.deepEqual(allowedJson.json(), { ok: true, headless: true });
-    assert.equal((await app.inject('/api/runtime-mode')).json().headless, true);
+    assert.deepEqual(allowedJson.json(), { ok: true });
 
     const webDist = path.join(tempDir, 'dist');
     const indexHtml = '<!doctype html><html><body>接口回退测试</body></html>';
@@ -224,7 +211,7 @@ async function main() {
       for (const [method, url, statusCode] of [
         ['POST', '/api/run/unknown', 404],
         ['GET', '/api/jobs/missing-job', 404],
-        ['POST', '/api/runtime-mode', 200],
+        ['POST', '/api/runtime-mode', 404],
       ]) {
         logs.length = 0;
         const response = await loggingApp.inject({ method, url, ...(statusCode === 200 ? { payload: { headless: true } } : {}) });

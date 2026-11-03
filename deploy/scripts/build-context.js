@@ -160,7 +160,10 @@ async function main() {
     }
     fs.mkdirSync(path.join(stage, 'scripts'), { recursive: true });
     fs.copyFileSync(path.join(__dirname, '..', selected.dockerfile), path.join(stage, 'Dockerfile'));
-    fs.copyFileSync(path.join(__dirname, 'start-desktop.sh'), path.join(stage, 'scripts', 'start-desktop.sh'));
+    // 旧 Dockerfile 的入口仍依赖桌面，仅为旧 Git 引用保留。
+    if (selected.layout === 'legacy') {
+      fs.copyFileSync(path.join(__dirname, 'legacy', 'start-desktop.sh'), path.join(stage, 'scripts', 'start-desktop.sh'));
+    }
     fs.writeFileSync(path.join(stage, '.dockerignore'), dockerignore);
     await runDocker(['build', '--platform', options.platform, '--label', `org.opencontainers.image.revision=${selected.revision}`, '--label', `io.ruyi.source=${worktree ? 'worktree' : 'commit'}`, '-t', options.image, stage]);
     console.log('本地镜像构建完成');

@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { apiFetch, requestJson } from '../api.js'
 import { formatTime } from '../labels.js'
-import RemoteDesktop from '../components/RemoteDesktop.vue'
 
 const props = defineProps({ currentUser: { type: Object, required: true } })
 const emit = defineEmits(['state-changed'])
@@ -14,8 +13,22 @@ const session = ref(null)
 const error = ref('')
 const busy = ref(false)
 const restoring = ref(true)
+const method = ref('wechat')
 const now = ref(Date.now())
 const active = computed(() => ['starting', 'waiting', 'saving'].includes(session.value?.status))
+const qrMessage = computed(() => ({
+  waiting: `请使用${session.value?.qr?.method === 'qq' ? 'QQ' : '微信'}扫描二维码`,
+  scanned: '已扫码，请在手机上确认',
+  confirmed: '正在登录…',
+  expired: '二维码已过期，正在刷新',
+  risk: '登录环境异常，请稍后重新扫码',
+})[session.value?.qr?.state] || '')
+// 切换方式或刷新时图片可能暂缺；失败只记在当前地址上，下一张图到达后自动恢复显示。
+const failedQrImage = ref('')
+const qrImage = computed(() => !session.value?.qr?.hasImage ? '' : `/api/platform-login/${encodeURIComponent(session.value.id)}/qr.png?t=${encodeURIComponent(session.value.qr.updatedAt)}`)
+const qrImageVisible = computed(() => Boolean(qrImage.value) && failedQrImage.value !== qrImage.value)
+const qrCovered = computed(() => ['scanned', 'confirmed'].includes(session.value?.qr?.state))
+const canSwitchMethod = computed(() => session.value?.status === 'waiting' && ['waiting', 'expired', 'risk'].includes(session.value?.qr?.state))
 const statusLabels = { none: '未登录', valid: '有效', expired: '已过期' }
 const expiryHours = computed(() => {
   const timestamp = new Date(summary.value?.expiresHintAt).getTime()
@@ -93,7 +106,7 @@ async function startLogin() {
   error.value = ''
   window.clearTimeout(successTimer)
   try {
-    const data = await requestJson('/api/platform-login', { method: 'POST' })
+    const data = await requestJson('/api/platform-login', { method: 'POST', body: { method: method.value } })
     // 请求期间切换页面也保留 ID，回到页面即可继续查看。
     sessionStorage.setItem(storageKey, data.session.id)
     acceptSession(data.session)
@@ -101,6 +114,28 @@ async function startLogin() {
     if (!disposed) error.value = cause.message
   } finally {
     if (!disposed) busy.value = false
+  }
+}
+
+async function switchMethod(value) {
+  if (busy.value || !canSwitchMethod.value || value === session.value.qr.method) return
+  busy.value = true
+  window.clearTimeout(pollTimer)
+  pollVersion += 1
+  try {
+    const data = await requestJson(`/api/platform-login/${encodeURIComponent(session.value.id)}/method`, { method: 'POST', body: { method: value } })
+    method.value = value
+    acceptSession(data.session)
+  } catch (cause) {
+    if (!disposed) error.value = cause.message
+  } finally {
+    if (!disposed) {
+      busy.value = false
+      if (active.value) {
+        window.clearTimeout(pollTimer)
+        pollTimer = window.setTimeout(pollSession, 1500)
+      }
+    }
   }
 }
 
@@ -170,7 +205,7 @@ onBeforeUnmount(() => {
       </dl>
       <p v-else-if="!summaryError" class="page-description" role="status">正在加载登录态…</p>
       <div v-if="!active" class="row-actions">
-        <button class="primary-button" type="button" :disabled="busy || restoring" @click="startLogin">{{ busy ? '正在处理…' : session && session.status !== 'succeeded' ? '重新开始' : summary?.status === 'valid' ? '重新登录' : '开始登录' }}</button>
+        <button class="primary-button" type="button" :disabled="busy || restoring" @click="startLogin()">{{ busy ? '正在处理…' : '扫码登录' }}</button>
         <button v-if="summary?.status === 'valid'" class="secondary-button" type="button" :disabled="busy || restoring" @click="clearState">清除登录态</button>
       </div>
     </section>
@@ -183,10 +218,29 @@ onBeforeUnmount(() => {
       <p :class="session.status === 'succeeded' ? 'form-success' : 'page-description'" role="status">{{ session.message }}{{ session.status === 'succeeded' ? '，2 秒后自动返回操作面板' : '' }}</p>
       <template v-if="active">
         <p class="page-description">剩余时间：{{ countdown }}</p>
-        <RemoteDesktop v-if="session.display === 'vnc'" :session-id="session.id" />
-        <p v-else-if="session.display === 'local'" class="platform-local-hint">登录窗口已在服务器所在电脑上打开，请在该窗口中完成扫码登录</p>
+        <div class="platform-qr-login">
+          <p v-if="!session.qr" class="page-description" role="status">正在准备二维码…</p>
+          <div v-if="session.qr" class="row-actions" aria-label="扫码方式">
+            <button v-for="choice in [{ method: 'wechat', label: '微信' }, { method: 'qq', label: 'QQ' }]" :key="choice.method" class="secondary-button" type="button" :aria-pressed="session.qr.method === choice.method" :disabled="busy || !canSwitchMethod" @click="switchMethod(choice.method)">{{ choice.label }}</button>
+          </div>
+          <div class="platform-qr-image" :aria-busy="qrCovered">
+            <img v-if="qrImageVisible" :src="qrImage" :alt="session.qr.method === 'qq' ? 'QQ 登录二维码' : '微信登录二维码'" @error="failedQrImage = qrImage">
+            <p v-else class="page-description">二维码加载中…</p>
+            <div v-if="qrCovered" class="platform-qr-overlay">{{ qrMessage }}</div>
+          </div>
+          <p class="page-description" role="status">{{ qrMessage }}</p>
+        </div>
         <button class="secondary-button" type="button" :disabled="busy || restoring" @click="cancelLogin">取消登录</button>
       </template>
     </section>
   </main>
 </template>
+
+<style scoped>
+.platform-qr-login { margin: 18px 0; }
+.platform-qr-login button[aria-pressed="true"] { background: #dff3e8; border-color: #27624a; }
+.platform-qr-image { position: relative; display: flex; align-items: center; justify-content: center; width: 280px; max-width: 100%; min-height: 220px; margin-top: 14px; }
+/* 截图只有约 87–136px，放大后手机才容易识别；保持像素边缘清晰。 */
+.platform-qr-image img { display: block; width: 200px; height: 200px; max-width: 100%; image-rendering: pixelated; }
+.platform-qr-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgb(255 255 255 / 85%); color: #27624a; text-align: center; }
+</style>

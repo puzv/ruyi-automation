@@ -41,7 +41,7 @@ async function main() {
     for (const [method, route] of [
       ['GET', '/api/admin/users'], ['GET', '/api/api-tokens'], ['POST', '/api/api-tokens'],
       ['POST', '/api/api-tokens/:id/revoke'], ['POST', '/api/auth/change-password'],
-      ['POST', '/api/runtime-mode'], ['POST', '/api/platform-login'], ['GET', '/api/new-business-route'],
+      ['POST', '/api/platform-login'], ['GET', '/api/new-business-route'],
     ]) {
       const { reply } = await call(method, route, `Bearer ${secret}`);
       assert.equal(reply.statusCode, 403);

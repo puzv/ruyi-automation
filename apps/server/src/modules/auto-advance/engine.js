@@ -1,3 +1,4 @@
+const { browserHeadless } = require('@ruyi/shared/config')
 // 自动推进引擎：在服务端按用户轮询平台，平台处理完成后自动提交下一个任务。
 //
 // 与“检测当前状态”的区别：那是用户手动触发的一次性检查；这里由后台定时执行，
@@ -119,9 +120,9 @@ function createAutoAdvance({ db, keys, dataRoot, log, intervalMs, maxStalled = D
     resolve: deps.resolveWorkspace ?? resolveWorkspace,
     ensure: deps.ensureWorkspace ?? ensureWorkspace,
     groupNames: deps.groupPlatformNames ?? groupPlatformNames,
-    inspectFiles: deps.inspectPlatformFiles ?? ((type, names, state) => platform.inspectPlatformFiles(type, names, state, { headless: true })),
-    inspectAudience: deps.inspectAnalyseAudience ?? ((names, state) => platform.inspectAnalyseAudience(names, state, { headless: true })),
-    inspectResults: deps.inspectInsightResults ?? ((names, state) => platform.inspectInsightResults(names, state, { headless: true })),
+    inspectFiles: deps.inspectPlatformFiles ?? ((type, names, state) => platform.inspectPlatformFiles(type, names, state, { headless: browserHeadless })),
+    inspectAudience: deps.inspectAnalyseAudience ?? ((names, state) => platform.inspectAnalyseAudience(names, state, { headless: browserHeadless })),
+    inspectResults: deps.inspectInsightResults ?? ((names, state) => platform.inspectInsightResults(names, state, { headless: browserHeadless })),
     isEnabled: deps.isEnabled ?? ((userId) => autoAdvanceRepo.isEnabled(db, userId)),
     setEnabledRow: deps.setEnabled ?? ((userId, enabled) => autoAdvanceRepo.setEnabled(db, userId, enabled)),
     activeJob: deps.activeJobForUser ?? ((userId) => jobs.activeJobForUser(db, userId)),
@@ -144,7 +145,7 @@ function createAutoAdvance({ db, keys, dataRoot, log, intervalMs, maxStalled = D
     if (!platformState) return { ok: false, reason: 'login_required' }
     const id = randomUUID()
     const result = await jobs.enqueueJob(db, {
-      id, userId: user.id, username: user.username, task, headless: runtime.headlessMode, requestId: null,
+      id, userId: user.id, username: user.username, task, headless: browserHeadless, requestId: null,
     })
     return result.ok ? { ok: true, jobId: id } : { ok: false, reason: result.reason }
   }

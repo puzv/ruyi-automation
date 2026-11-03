@@ -196,7 +196,7 @@ async function main() {
     const otherCookie = sessionCookie(await login('auth_required'));
     assert.equal((await request('GET', '/api/auth/me', requiredCookie)).json().user.mustChangePassword, true);
     for (const [method, url, payload] of [
-      ['GET', '/api/status'], ['GET', '/api/admin/users'], ['GET', '/%61pi/status'], ['GET', '/api/%61dmin/users'], ['POST', '/api/runtime-mode', { headless: true }],
+      ['GET', '/api/status'], ['GET', '/api/admin/users'], ['GET', '/%61pi/status'], ['GET', '/api/%61dmin/users'],
     ]) {
       const response = await request(method, url, requiredCookie, payload);
       assert.equal(response.statusCode, 403);

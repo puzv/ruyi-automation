@@ -166,6 +166,7 @@ async function main() {
     assert.equal(spawned.options.env.RUYI_UPLOAD_DIR, alice);
     assert.equal(spawned.options.env.RUYI_USER, 'alice');
     assert.equal(spawned.options.env.RUYI_JOB_ID, id);
+    assert.equal(spawned.options.env.RUYI_HEADLESS, require('@ruyi/shared/config').browserHeadless ? '1' : '0');
     assert.equal(spawned.options.cwd, require('@ruyi/shared/config').projectRoot);
     for (const folder of ['raw', 'idfa', 'oaid', 'pn', 'result']) assert.ok(fs.statSync(path.join(alice, folder)).isDirectory());
     spawned.child.stdout.emit('data', Buffer.from('任务输出'));

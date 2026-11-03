@@ -141,8 +141,8 @@ async function main() {
     assert.equal(finish.target_id, started.json().id);
     assert.equal(parseDetail(finish).code, 2); assert.equal(parseDetail(finish).signal, 'SIGTERM');
     assert.ok(parseDetail(finish).durationMs >= 0);
-    assert.equal((await request('POST', '/api/runtime-mode', userCookie, { headless: true })).statusCode, 200);
-    assert.deepEqual(parseDetail(await latest('runtime.mode_change')), { headless: true });
+    assert.equal((await request('POST', '/api/runtime-mode', userCookie, { headless: true })).statusCode, 404);
+    assert.equal(await latest('runtime.mode_change'), undefined);
     for (const url of ['/api/login-open', '/api/profile-release']) {
       assert.equal((await request('POST', url, userCookie)).statusCode, 404);
     }
@@ -172,7 +172,7 @@ async function main() {
     assert.equal(bounded.total, 2);
     assert.equal((await request('GET', '/api/logs/mine?action=test.date_boundary&pageSize=999', userCookie)).json().pageSize, 100);
     const noViewBefore = (await logs('admin.logs_view')).length;
-    for (const url of ['/api/auth/me', '/api/runtime-mode', '/api/admin/users']) await admin('GET', url);
+    for (const url of ['/api/auth/me', '/api/admin/users']) await admin('GET', url);
     assert.equal((await logs('admin.logs_view')).length, noViewBefore);
     assert.equal((await request('POST', '/api/auth/logout', userCookie)).statusCode, 200);
     assert.equal((await latest('auth.logout')).result, 'success');

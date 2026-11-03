@@ -1,3 +1,4 @@
+const { browserHeadless } = require('@ruyi/shared/config')
 const { randomUUID } = require('node:crypto')
 const state = require('../../state')
 const { executeTask, signalJobProcess, cleanupJobStates, trackCompletion } = require('@ruyi/worker/src/execution')
@@ -10,7 +11,7 @@ function startJob(task, script, { user, uploadDir, onFinish, platformState, db, 
   const startedAt = Date.now()
   const id = randomUUID()
   const job = { id, task, running: true, output: '' }
-  const execution = executeTask({ id, script, user, uploadDir, headless: state.headlessMode,
+  const execution = executeTask({ id, script, user, uploadDir, headless: browserHeadless,
     platformState, db, keys, log, onOutput(data) { job.output += data.toString() } })
   Object.defineProperties(job, {
     userId: { value: user?.id ?? null, enumerable: false },

@@ -29,8 +29,8 @@ const deferred = () => {
   return gate;
 };
 
-async function eventually(get, message) {
-  for (let attempt = 0; attempt < 500; attempt++) {
+async function eventually(get, message, attempts = 3000) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     const value = await get();
     if (value) return value;
     await sleep();
@@ -41,7 +41,10 @@ async function eventually(get, message) {
 function fakeBrowser(options = {}) {
   const plan = {
     ready: { ruyi: false, datanexus: false }, sequences: {}, probes: [], checked: [], pages: [],
-    closeCount: 0, contextOptions: null, storageOptions: null, ...options,
+    closeCount: 0, contextOptions: null, storageOptions: null,
+    methods: [], refreshes: 0, headerClicks: 0, rejectDatanexus: true,
+    png: Buffer.from('FAKE_QR_PNG_ONLY'),
+    qrResult: { state: 'waiting', image: Buffer.from('FAKE_QR_PNG_ONLY') }, ...options,
   };
   const context = new EventEmitter();
   context.pages = () => plan.pages.filter((page) => !page.isClosed());
@@ -60,7 +63,7 @@ function fakeBrowser(options = {}) {
     plan.storageOptions = options;
     if (plan.storageGate) await plan.storageGate.promise;
     if (plan.storageError) throw new Error(`${marker}: cookies 原始错误堆栈`);
-    return captured;
+    return plan.captured || captured;
   };
   const browser = new EventEmitter();
   browser.newContext = async (options) => {
@@ -114,7 +117,31 @@ async function main() {
       const key = target === loginTargets.ruyi ? 'ruyi' : 'datanexus';
       if (page.isClosed() || page.url() !== target.url) return false;
       plan.checked.push(key);
+      if (plan.advanceClock) plan.clock += key === 'datanexus' ? 10000 : 1000;
       return plan.sequences[key]?.length ? plan.sequences[key].shift() : plan.ready[key];
+    },
+    qrOperations: {
+      // 假页面地址始终是目标地址，未登录即视为停留在统一登录页。
+      async isLoginPage() { return true; },
+      async selectMethod(page, method) {
+        const plan = launched.find((item) => item.pages.includes(page));
+        plan.methods.push(method);
+      },
+      async readQr(page) {
+        const plan = launched.find((item) => item.pages.includes(page));
+        return plan.qrResult;
+      },
+      async refreshQr(page) {
+        const plan = launched.find((item) => item.pages.includes(page));
+        plan.refreshes++;
+        if (!plan.alwaysExpired) plan.qrResult = { state: 'waiting', image: plan.png };
+      },
+      async clickHeaderLogin(page) {
+        const plan = launched.find((item) => item.pages.includes(page));
+        plan.headerClicks++;
+        if (!plan.rejectDatanexus) plan.ready.datanexus = true;
+        return true;
+      },
     },
     async probeSite(context, target) {
       const plan = launched.find((item) => item.context === context);
@@ -124,11 +151,11 @@ async function main() {
       await page.goto(target.url);
       const ok = plan.probe ? await plan.probe(key, plan) : true;
       await page.close();
-      return { ok, url: target.url };
+      return { ok, url: plan.probeUrl || target.url };
     },
   };
   const launch = async (options) => {
-    assert.equal(options.headless, false);
+    assert.equal(options.headless, true);
     assert.equal(typeof options.executablePath, 'string');
     assert.ok(Array.isArray(options.args));
     const plan = queue.shift();
@@ -154,8 +181,8 @@ async function main() {
     const missingDir = path.join(os.tmpdir(), `ruyi-platform-login-${crypto.randomUUID()}`);
     app = buildApp({ db, stateKeys: keys, logger: false, uploadRoot: missingDir, webDist: missingDir,
       platformLogin: { launch, checks, pollMs: 5 } });
-    const request = async (user, method, url) => {
-      const response = await app.inject({ method, url, ...(user ? { headers: { cookie: user.cookie } } : {}) });
+    const request = async (user, method, url, payload) => {
+      const response = await app.inject({ method, url, ...(payload ? { payload } : {}), ...(user ? { headers: { cookie: user.cookie } } : {}) });
       for (const forbidden of ['cookies', marker, 'state_ciphertext', 'storageState', 'context', 'browser']) {
         assert.equal(response.body.includes(forbidden), false, `接口泄露 ${forbidden}`);
       }
@@ -165,9 +192,9 @@ async function main() {
     const logs = (action, user = a) => db.selectFrom('ruyi_operation_logs').selectAll()
       .where('user_id', '=', user.id).where('action', '=', action).orderBy('id').execute();
     const read = (user = a) => states.getStateRow(db, user.id);
-    const start = async (plan, user = a) => {
+    const start = async (plan, user = a, payload = {}) => {
       queue.push(plan);
-      const response = await request(user, 'POST', '/api/platform-login');
+      const response = await request(user, 'POST', '/api/platform-login', payload);
       assert.equal(response.statusCode, 200, response.body);
       assert.equal(response.json().session.status, 'starting');
       return response.json().session.id;
@@ -183,7 +210,8 @@ async function main() {
     };
 
     for (const [method, url] of [['POST', '/api/platform-login'], ['GET', '/api/platform-login/missing'],
-      ['DELETE', '/api/platform-login/missing'], ['POST', '/api/platform-state/clear']]) {
+      ['DELETE', '/api/platform-login/missing'], ['GET', '/api/platform-login/missing/qr.png'],
+      ['POST', '/api/platform-login/missing/method'], ['POST', '/api/platform-state/clear']]) {
       assert.equal((await request(null, method, url)).statusCode, 401);
     }
 
@@ -205,8 +233,9 @@ async function main() {
     await eventually(() => normal.checked.includes('datanexus'), '未开始 DataNexus 登录');
     const partial = (await get(a, normalId)).json().session;
     assert.deepEqual(partial.sites, { ruyi: true, datanexus: false });
-    assert.deepEqual(Object.keys(partial).sort(), ['id', 'status', 'sites', 'message', 'createdAt', 'expiresAt', 'display'].sort());
-    assert.equal(partial.display, 'local');
+    assert.deepEqual(Object.keys(partial).sort(), ['id', 'status', 'sites', 'message', 'createdAt', 'expiresAt', 'qr'].sort());
+    assert.equal(Object.hasOwn(partial, 'display'), false);
+    assert.equal(Object.hasOwn(partial, 'mode'), false);
     assert.equal(new Date(partial.expiresAt) - new Date(partial.createdAt), 15 * 60 * 1000);
     normal.ready.datanexus = true;
     await waitStatus(normalId, 'saving');
@@ -220,6 +249,8 @@ async function main() {
     assert.deepEqual((await loadUserState(db, a.id, keys)).state, captured);
     const normalStart = (await logs('platform.login_start')).find((row) => detailOf(row).sessionId === normalId);
     assert.equal(normalStart.result, 'success');
+    assert.equal(Object.hasOwn(detailOf(normalStart), 'mode'), false);
+    assert.equal(detailOf(normalStart).method, 'wechat');
     assert.equal(normalStart.request_id, normalEnd.request_id);
     assert.equal(normalEnd.username, a.username);
     assert.ok(normalStart.request_id);
@@ -242,7 +273,7 @@ async function main() {
     await eventually(() => flashing.checked.length >= 8, '未完成闪现检查');
     assert.equal(sessions.getSession(flashingId, a.id).sites.ruyi, false);
     assert.equal(status(flashingId), 'waiting');
-    assert.deepEqual(flashing.contextOptions.storageState, captured, '有效登录态应在内存中用于初始化');
+    assert.equal(Object.hasOwn(flashing.contextOptions, 'storageState'), false, '扫码始终使用全新上下文');
 
     const launchCount = launched.length;
     const duplicates = await Promise.all(Array.from({ length: 3 }, () => request(a, 'POST', '/api/platform-login')));
@@ -282,7 +313,8 @@ async function main() {
 
     const alwaysFail = fakeBrowser({ ready: { ruyi: true, datanexus: true }, probe: () => false });
     const alwaysFailId = await start(alwaysFail, c);
-    await waitStatus(alwaysFailId, 'failed', c);
+    // 三轮复查、每站稳定 3 秒，真实时钟下约 18 秒。
+    await eventually(() => status(alwaysFailId, c) === 'failed', '未进入 failed', 6000);
     await waitEndLog(alwaysFailId, 'failed', c);
     assert.equal(alwaysFail.probes.length, 6, '复查最多三轮');
     assert.equal(await read(c), undefined);
@@ -365,16 +397,120 @@ async function main() {
     now += 1;
     assert.equal(manager.getSession(stuckSession.id, c.id), null);
 
-    // 新标签页可以完成登录；页面检查必须扫描整个上下文。
-    const popup = fakeBrowser();
-    const popupId = await start(popup, b);
-    await waitStatus(popupId, 'waiting', b);
-    popup.pages[0].address = 'https://sso.e.qq.com/login';
-    const popupPage = await popup.context.newPage();
-    await popupPage.goto(loginTargets.ruyi.url);
-    popup.ready = { ruyi: true, datanexus: true };
-    await waitStatus(popupId, 'succeeded', b);
-    await waitEndLog(popupId, 'succeeded', b);
+    // 二维码和登录态均使用内存假数据，整个测试不启动真实浏览器。
+    const qrPlan = (options = {}) => {
+      const png = Buffer.from('FAKE_QR_PNG_ONLY');
+      return fakeBrowser({ rejectDatanexus: false, methods: [], refreshes: 0, headerClicks: 0,
+        png, qrResult: { state: 'waiting', image: png }, ...options });
+    };
+    await storeCapturedState(db, a.id, captured, keys);
+    const oldQrState = await read();
+    const replacement = { cookies: [], origins: [] };
+    const qrCancel = qrPlan();
+    const qrCancelId = await start(qrCancel, a, {});
+    await eventually(() => sessions.getSession(qrCancelId, a.id)?.qr?.image, '已有登录态时二维码未生成');
+    assert.equal(Object.hasOwn(qrCancel.contextOptions, 'storageState'), false);
+    await request(a, 'DELETE', `/api/platform-login/${qrCancelId}`);
+    await waitEndLog(qrCancelId, 'cancelled');
+    assert.equal((await read()).version, oldQrState.version);
+    assert.deepEqual((await read()).state_ciphertext, oldQrState.state_ciphertext);
+
+    const wrongKeys = loadKeys({ RUYI_STATE_KEY: crypto.randomBytes(32).toString('base64') });
+    const badKeyPlan = qrPlan();
+    const badKeyManager = sessions.createSessionManager();
+    managers.push(badKeyManager);
+    launched.push(badKeyPlan);
+    const badKeySession = badKeyManager.startSession(a, { db, keys: wrongKeys, checks, pollMs: 5,
+      launch: async () => badKeyPlan.browser });
+    await eventually(() => badKeySession.qr?.image, '旧登录态无法解密时二维码未生成');
+    await badKeyManager.cancelSession(badKeySession.id, a.id);
+    await badKeySession.task;
+    assert.equal((await read()).version, oldQrState.version);
+    assert.deepEqual((await read()).state_ciphertext, oldQrState.state_ciphertext);
+
+    const qr = qrPlan({ captured: replacement, storageGate: deferred(), probeUrl: 'https://ruyi.qq.com/auth?code=FAKE_OAUTH_CODE' });
+    const qrId = await start(qr, a, {});
+    await eventually(() => sessions.getSession(qrId, a.id)?.qr?.image, '二维码未生成');
+    assert.deepEqual(qr.methods, ['wechat']);
+    const qrPublic = (await get(a, qrId)).json().session;
+    assert.equal(Object.hasOwn(qrPublic, 'mode'), false);
+    assert.equal(Object.hasOwn(qrPublic, 'display'), false);
+    assert.equal(qrPublic.qr.method, 'wechat');
+    assert.equal(Object.hasOwn(qrPublic.qr, 'image'), false);
+    const imageUrl = `/api/platform-login/${qrId}/qr.png`;
+    const image = await request(a, 'GET', imageUrl);
+    assert.equal(image.statusCode, 200);
+    assert.equal(image.headers['cache-control'], 'no-store');
+    assert.deepEqual(image.rawPayload, qr.png);
+    assert.equal((await request(b, 'GET', imageUrl)).statusCode, 404);
+    const methodUrl = `/api/platform-login/${qrId}/method`;
+    assert.equal((await request(b, 'POST', methodUrl, { method: 'qq' })).statusCode, 404);
+    assert.equal((await request(a, 'POST', methodUrl, { method: 'bad' })).statusCode, 400);
+    assert.equal((await request(a, 'POST', methodUrl, { method: 'qq' })).statusCode, 200);
+    assert.deepEqual(qr.methods, ['wechat', 'qq']);
+    qr.qrResult = { state: 'expired' };
+    await eventually(() => qr.refreshes === 1, '失效二维码未自动刷新');
+    qr.qrResult = { state: 'scanned' };
+    await eventually(() => sessions.getSession(qrId, a.id)?.qr?.state === 'scanned', '扫码状态未更新');
+    assert.equal((await request(a, 'POST', methodUrl, { method: 'wechat' })).statusCode, 409);
+    qr.qrResult = { state: 'confirmed' };
+    await eventually(() => sessions.getSession(qrId, a.id)?.qr?.state === 'confirmed', '确认状态未更新');
+    assert.equal((await request(a, 'POST', methodUrl, { method: 'wechat' })).statusCode, 409);
+    qr.ready.ruyi = true;
+    await waitStatus(qrId, 'saving');
+    assert.equal(qr.headerClicks, 1, 'DataNexus 应自动点击页面头部登录按钮');
+    assert.equal((await request(a, 'GET', imageUrl)).statusCode, 404);
+    assert.equal((await request(a, 'POST', methodUrl, { method: 'wechat' })).statusCode, 409);
+    qr.storageGate.resolve();
+    await waitStatus(qrId, 'succeeded');
+    assert.ok((await read()).version > oldQrState.version);
+    assert.notDeepEqual((await read()).state_ciphertext, oldQrState.state_ciphertext);
+    assert.deepEqual((await loadUserState(db, a.id, keys)).state, replacement);
+    const qrLog = detailOf(await waitEndLog(qrId, 'succeeded'));
+    assert.equal(Object.hasOwn(qrLog, 'mode'), false);
+    assert.equal(qrLog.method, 'qq');
+    assert.equal(sessions.getSession(qrId, a.id).qr, null);
+    assert.equal((await request(a, 'GET', imageUrl)).statusCode, 404);
+    assert.equal((await request(a, 'POST', methodUrl, { method: 'wechat' })).statusCode, 409);
+    assert.equal(JSON.stringify(qrLog).includes(qr.png.toString()), false);
+    assert.equal(JSON.stringify(qrLog).includes('?'), false);
+    assert.equal(JSON.stringify(await logs('platform.login')).includes('FAKE_OAUTH_CODE'), false);
+
+    // 假时钟推进二维码刷新和 DataNexus 超时，避免依赖实际等待时间。
+    await storeCapturedState(db, c.id, captured, keys);
+    const beforeQrFailures = await read(c);
+    for (const scenario of ['expired', 'datanexus']) {
+      const plan = qrPlan({ clock: Date.now(), alwaysExpired: scenario === 'expired',
+        rejectDatanexus: scenario === 'datanexus', advanceClock: scenario === 'datanexus' });
+      if (scenario === 'expired') plan.qrResult = { state: 'expired' };
+      else plan.ready.ruyi = true;
+      const manager = sessions.createSessionManager({ now: () => plan.clock, sweepMs: 5 });
+      managers.push(manager);
+      launched.push(plan);
+      const originalRead = checks.qrOperations.readQr;
+      const scenarioChecks = { ...checks, qrOperations: { ...checks.qrOperations,
+        async readQr(page, method) { plan.clock += 2000; return originalRead(page, method); } } };
+      const session = manager.startSession(c, { db, keys, checks: scenarioChecks,
+        launch: async (options) => { assert.equal(options.headless, true); return plan.browser; }, pollMs: 5 });
+      if (scenario === 'expired') {
+        // 读取间隔由会话时钟控制，每轮检查也推进到下一次刷新。
+        const advance = setInterval(() => { plan.clock += 2000; }, 5);
+        try { await eventually(() => session.status === 'expired', '反复失效未结束会话'); }
+        finally { clearInterval(advance); }
+        assert.equal(plan.refreshes, 5);
+        assert.equal(session.message, '二维码多次过期，请重新开始');
+      } else {
+        await eventually(() => session.status === 'failed', 'DataNexus 超时未失败');
+        assert.equal(plan.headerClicks, 1);
+        assert.equal(session.message, 'DataNexus 自动登录失败，请稍后重新扫码');
+        assert.equal(plan.pages.filter((page) => page.address === loginTargets.datanexus.url).length, 1);
+      }
+      await session.task;
+      await session.finishPromise;
+      assert.equal(session.qr, null);
+      assert.equal((await read(c)).version, beforeQrFailures.version);
+      assert.deepEqual((await read(c)).state_ciphertext, beforeQrFailures.state_ciphertext);
+    }
 
     const shutdown = fakeBrowser();
     const shutdownId = await start(shutdown);

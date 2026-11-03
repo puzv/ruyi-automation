@@ -14,7 +14,7 @@ compileScript(descriptor, { id: 'platform-login-test' });
 assert.deepEqual(compileTemplate({ filename, id: 'platform-login-test', source: descriptor.template.content }).errors, []);
 const source = descriptor.scriptSetup.content.replace(/^import .*$/gm, '');
 const names = ['summary', 'summaryError', 'session', 'error', 'busy', 'restoring', 'active', 'expiryLabel',
-  'expiryHours', 'countdown', 'startLogin', 'cancelLogin', 'clearState', 'refreshSummary'];
+  'expiryHours', 'countdown', 'qrMessage', 'qrImage', 'qrImageVisible', 'failedQrImage', 'qrCovered', 'canSwitchMethod', 'switchMethod', 'startLogin', 'cancelLogin', 'clearState', 'refreshSummary'];
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
 
@@ -31,8 +31,8 @@ function mount({ storage = new Map(), userId = 7, api } = {}) {
   let confirms = 0;
   const location = { hash: '#/platform-login' };
   const apiFetch = async (url, options = {}) => {
-    calls.push({ url, method: options.method || 'GET' });
-    const result = await api(url, options.method || 'GET');
+    calls.push({ url, method: options.method || 'GET', body: options.body });
+    const result = await api(url, options.method || 'GET', options.body);
     const status = result.status || 200;
     // 响应按网络序列化，避免测试对象与组件响应共享可变引用。
     const data = JSON.parse(JSON.stringify(result.data));
@@ -70,68 +70,12 @@ function mount({ storage = new Map(), userId = 7, api } = {}) {
   };
 }
 
-async function testRemoteDesktop() {
-  const desktopFile = path.resolve(__dirname, '../apps/web/src/components/RemoteDesktop.vue');
-  const { descriptor: desktop } = parse(fs.readFileSync(desktopFile, 'utf8'), { filename: desktopFile });
-  compileScript(desktop, { id: 'remote-desktop-test' });
-  assert.deepEqual(compileTemplate({ filename: desktopFile, id: 'remote-desktop-test', source: desktop.template.content }).errors, []);
-  const script = desktop.scriptSetup.content.replace(/^import .*$/gm, '');
-  for (const [protocol, websocketProtocol] of [['http:', 'ws'], ['https:', 'wss']]) {
-    const props = vue.reactive({ sessionId: 'session /?#中文' });
-    const screen = {};
-    const clients = [];
-    let mounted;
-    let unmounted;
-    const scope = vue.effectScope();
-    const component = scope.run(() => vm.runInNewContext(`${script}\n;({ screen, status, connect })`, {
-      ...vue, defineProps: () => props,
-      onMounted: (fn) => { mounted = fn; }, onBeforeUnmount: (fn) => { unmounted = fn; },
-      location: { protocol, host: 'localhost:5174' },
-      RFB: class {
-        constructor(target, url, options) {
-          this.target = target; this.url = url; this.options = options;
-          this.events = {}; this.disconnected = false;
-          clients.push(this);
-        }
-        addEventListener(event, fn) { this.events[event] = fn; }
-        disconnect() { this.disconnected = true; }
-      },
-    }, { filename: desktopFile }));
-    const checkConnection = (client, sessionId) => {
-      assert.equal(client.target, component.screen.value);
-      assert.equal(client.url, `${websocketProtocol}://localhost:5174/api/platform-login/${encodeURIComponent(sessionId)}/vnc`);
-      assert.deepEqual(Array.from(client.options.wsProtocols), ['binary']);
-    };
-    try {
-      component.screen.value = screen;
-      mounted();
-      assert.equal(clients.length, 1);
-      checkConnection(clients[0], props.sessionId);
-      clients[0].events.connect();
-      assert.equal(component.status.value, '已连接');
-      clients[0].events.disconnect();
-      assert.equal(component.status.value, '已断开');
-      component.connect();
-      assert.equal(clients.length, 2);
-      assert.equal(clients[0].disconnected, true);
-      checkConnection(clients[1], props.sessionId);
-      props.sessionId = 'another-session';
-      await vue.nextTick();
-      assert.equal(clients.length, 3);
-      assert.equal(clients[1].disconnected, true);
-      checkConnection(clients[2], props.sessionId);
-    } finally {
-      unmounted();
-      scope.stop();
-    }
-    assert.equal(clients[2].disconnected, true);
-  }
-}
-
 async function testWorkbench() {
   const workbenchFile = path.resolve(__dirname, '../apps/web/src/views/WorkbenchView.vue');
   const { descriptor: workbench } = parse(fs.readFileSync(workbenchFile, 'utf8'), { filename: workbenchFile });
   compileScript(workbench, { id: 'workbench-test' });
+  assert.doesNotMatch(workbench.scriptSetup.content, /refreshRuntimeMode|toggleRuntimeMode|modeUpdating/);
+  assert.doesNotMatch(workbench.template.content, /调试模式|后台模式|mode-switch/);
   assert.deepEqual(compileTemplate({ filename: workbenchFile, id: 'workbench-test', source: workbench.template.content }).errors, []);
   const icons = workbench.scriptSetup.content.match(/import \{([\s\S]*?)\} from 'lucide-vue-next'/)[1].split(',').map((name) => name.trim()).filter(Boolean);
   const calls = [];
@@ -176,18 +120,21 @@ async function main() {
   let startError = '';
   let pollError = false;
   let cancelError = '';
-  let display = 'local';
   let sequence = 0;
   let getGate;
   let startGate;
-  const api = async (url, method) => {
+  const api = async (url, method, body) => {
     if (url === '/api/platform-state') return { data: { ok: true, ...state } };
     if (url === '/api/platform-state/clear') { state = { status: 'none' }; return { data: { ok: true } }; }
     if (url === '/api/platform-login') {
       if (startGate) await startGate.promise;
       if (startError) return { status: 409, data: { ok: false, message: startError } };
-      current = { id: `session-${++sequence}`, status: 'waiting', display, sites: { ruyi: false, datanexus: false },
+      current = { id: `session-${++sequence}`, status: 'waiting', qr: { method: body.method, state: 'waiting', updatedAt: 1, hasImage: true }, sites: { ruyi: false, datanexus: false },
         message: '请登录如翼', expiresAt: new Date(Date.now() + 15 * 60000).toISOString() };
+      return { data: { ok: true, session: current } };
+    }
+    if (url.endsWith('/method')) {
+      current.qr.method = body.method; current.qr.updatedAt++;
       return { data: { ok: true, session: current } };
     }
     if (method === 'DELETE') {
@@ -206,7 +153,47 @@ async function main() {
   assert.equal(view.restoring.value, false);
   await view.startLogin();
   assert.equal(view.active.value, true);
-  assert.equal(view.session.value.display, 'local');
+  assert.deepEqual(JSON.parse(JSON.stringify(page.calls.find((call) => call.url === '/api/platform-login').body)), { method: 'wechat' });
+  assert.match(descriptor.template.content, /'扫码登录'/);
+  assert.match(descriptor.template.content, /:src="qrImage"/);
+  assert.match(descriptor.template.content, /@click="switchMethod\(choice.method\)"/);
+  assert.doesNotMatch(descriptor.template.content, /session\.mode|session\.display|本机窗口|远程桌面/);
+  assert.equal(view.qrMessage.value, '请使用微信扫描二维码');
+  assert.equal(view.canSwitchMethod.value, true);
+  assert.equal(view.qrImage.value, `/api/platform-login/${current.id}/qr.png?t=1`);
+  await view.switchMethod('qq');
+  assert.equal(view.session.value.qr.method, 'qq');
+  assert.equal(view.qrImage.value, `/api/platform-login/${current.id}/qr.png?t=2`);
+  assert.equal(view.qrMessage.value, '请使用QQ扫描二维码');
+  // 切换后新图尚未截到时不请求图片；一次加载失败后，下一张图必须能重新显示。
+  view.session.value = { ...view.session.value, qr: { ...view.session.value.qr, hasImage: false, updatedAt: 3 } };
+  assert.equal(view.qrImage.value, '');
+  assert.equal(view.qrImageVisible.value, false);
+  view.session.value = { ...view.session.value, qr: { ...view.session.value.qr, hasImage: true, updatedAt: 4 } };
+  view.failedQrImage.value = view.qrImage.value;
+  assert.equal(view.qrImageVisible.value, false);
+  view.session.value = { ...view.session.value, qr: { ...view.session.value.qr, updatedAt: 5 } };
+  assert.equal(view.qrImageVisible.value, true);
+  for (const [qrState, message, covered] of [
+    ['scanned', '已扫码，请在手机上确认', true],
+    ['confirmed', '正在登录…', true],
+    ['expired', '二维码已过期，正在刷新', false],
+    ['risk', '登录环境异常，请稍后重新扫码', false],
+  ]) {
+    current.qr.state = qrState;
+    await page.tick(1500);
+    assert.equal(view.qrMessage.value, message);
+    assert.equal(view.qrCovered.value, covered);
+    if (covered) {
+      const count = page.calls.length;
+      await view.switchMethod('wechat');
+      assert.equal(page.calls.length, count);
+    }
+  }
+  current.qr = null;
+  await page.tick(1500);
+  assert.equal(view.qrImage.value, '');
+  assert.equal(view.canSwitchMethod.value, false);
   assert.equal(storage.get('platform-login-session:7'), current.id);
   assert.deepEqual([...page.timeouts.values()].map((timer) => timer.delay), [1500]);
   const countdown = view.countdown.value;
@@ -245,10 +232,10 @@ async function main() {
   startError = '其他用户正在登录，请稍后重试';
   await view.startLogin();
   assert.equal(view.error.value, startError);
-  startError = ''; display = 'vnc';
+  startError = '';
   for (const status of ['failed', 'expired']) {
     await view.startLogin();
-    assert.equal(view.session.value.display, 'vnc');
+    assert.deepEqual(JSON.parse(JSON.stringify(page.calls.filter((call) => call.url === '/api/platform-login').at(-1).body)), { method: 'wechat' });
     current.status = status; current.message = `会话结束：${status}`;
     await page.tick(1500);
     assert.equal(view.session.value.status, status);
@@ -330,7 +317,6 @@ async function main() {
   assert.equal(failingPage.component.summaryError.value, '无法连接服务');
   assert.equal(failingPage.component.restoring.value, false);
   failingPage.unmount();
-  await testRemoteDesktop();
   await testWorkbench();
   await require('./frontend-jobs.test')();
 }

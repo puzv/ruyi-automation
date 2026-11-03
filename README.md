@@ -117,7 +117,7 @@ RUYI_AUDIENCE_LIMIT=480 \\
 npm run create
 ```
 
-所有浏览器流程默认以后台（无头）模式运行。需要查看浏览器窗口或完成登录、验证码、二次认证时，请设置 `RUYI_HEADLESS=0`（也接受 `false`/`no`/`off`）切换为可视调试模式；完成登录后可取消该变量恢复后台运行。
+任务和平台检查默认以后台（无头）模式运行。本机开发需要查看浏览器窗口时，可设置 `RUYI_HEADLESS=0`（也接受 `false`/`no`/`off`）。平台登录始终使用网页扫码，无头运行。
 
 业务 URL 也可通过 `RUYI_URL_*` 环境变量覆盖，具体名称见 `packages/shared/config.js`。
 

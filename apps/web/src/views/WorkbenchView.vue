@@ -11,8 +11,6 @@ import {
   FolderOpen,
   Layers3,
   ListChecks,
-  Monitor,
-  MonitorOff,
   RefreshCw,
   CircleUserRound,
   UsersRound,
@@ -48,8 +46,6 @@ const jobLog = computed(() => currentJob.value?.output || '')
 const createExpanded = ref(true)
 const insightExpanded = ref(true)
 const downloadExpanded = ref(true)
-const headlessMode = ref(true)
-const modeUpdating = ref(false)
 const platformState = ref({ status: 'none', expiresHintAt: null })
 const platformStateError = ref('')
 const platformLoginRequired = ref(false)
@@ -113,33 +109,6 @@ async function refreshStatus() {
   const response = await apiFetch('/api/status')
   const data = await response.json()
   if (data.ok) { workspaceStatus.value = data.workspaceStatus; statusCounts.value = { ...statusCounts.value, ...data } }
-}
-async function refreshRuntimeMode() {
-  const response = await apiFetch('/api/runtime-mode')
-  const data = await response.json()
-  if (data.ok) headlessMode.value = data.headless
-}
-async function toggleRuntimeMode() {
-  if (modeUpdating.value) return
-  modeUpdating.value = true
-  try {
-    const response = await apiFetch('/api/runtime-mode', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ headless: !headlessMode.value }),
-    })
-    const data = await response.json()
-    if (data.ok) {
-      headlessMode.value = data.headless
-      notice.value = data.headless ? '已切换为后台模式' : '已切换为调试模式'
-    } else {
-      notice.value = `模式切换失败：${data.message || '未知错误'}`
-    }
-  } catch (error) {
-    notice.value = `模式切换失败：${error.message || '无法连接本地服务'}`
-  } finally {
-    modeUpdating.value = false
-  }
 }
 async function refreshPlatformState() {
   try {
@@ -207,7 +176,7 @@ function scheduleAutoRefresh() {
 defineExpose({ refreshPlatformState, refreshAutoAdvance })
 watch(() => props.page, (page) => { if (page === '/') refreshPlatformState() })
 onMounted(() => {
-  refreshStatus(); refreshRuntimeMode(); refreshPlatformState(); refreshAutoAdvance()
+  refreshStatus(); refreshPlatformState(); refreshAutoAdvance()
   restoreActiveJob(); scheduleAutoRefresh()
 })
 onBeforeUnmount(() => {
@@ -473,10 +442,6 @@ async function cancelJob() {
           <h1>操作面板</h1>
         </div>
         <div class="topbar-actions">
-          <button class="mode-switch" :class="{ active: headlessMode }" type="button" :disabled="modeUpdating" :aria-checked="headlessMode" role="switch" :aria-label="headlessMode ? '后台模式，点击切换为调试模式' : '调试模式，点击切换为后台模式'" :title="headlessMode ? '点击切换为调试模式' : '点击切换为后台模式'" @click="toggleRuntimeMode">
-            <span class="mode-option" :class="{ selected: !headlessMode }"><Monitor :size="16" /><span>调试模式</span></span>
-            <span class="mode-option" :class="{ selected: headlessMode }"><MonitorOff :size="16" /><span>后台模式</span></span>
-          </button>
           <a class="help-button" href="https://cf.ge.cn/pages/viewpage.action?pageId=289808671" target="_blank" rel="noopener noreferrer" aria-label="帮助"><CircleHelp :size="18" /><span>使用帮助</span></a>
         </div>
       </header>

@@ -28,7 +28,10 @@ async function until(check, message) {
 function build(source = '--worktree', extra = [], customEnv = {}) {
   return spawnSync('bash', [path.join(deploy, 'scripts/build-image.sh'), repo, source, 'harbor.ge.cn/b2d/common/ruyi-upload:offline', ...extra], { env: { ...env, ...customEnv }, encoding: 'utf8' });
 }
-function cleanStage() { assert.deepStrictEqual(fs.readdirSync(stages), [], '构建临时目录未清理'); }
+function cleanStage() {
+  // macOS 的 Git 工具可能在 TMPDIR 创建 xcrun_db；只检查构建脚本拥有的目录。
+  assert.deepStrictEqual(fs.readdirSync(stages).filter(name => name.startsWith('ruyi-build-')), [], '构建临时目录未清理');
+}
 function services() { return fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : ''; }
 function aptNetworkConfiguration(filename) {
   const dockerfile = fs.readFileSync(path.join(deploy, filename), 'utf8');
@@ -87,9 +90,11 @@ function layoutConfiguration() {
   assert(workspace.indexOf('COPY . .') < workspace.indexOf('RUN npm run build:web'));
   for (const file of [legacy, workspace]) for (const expected of [
     'FROM mcr.microsoft.com/playwright:v1.62.1-noble', 'PLAYWRIGHT_BROWSERS_PATH=/ms-playwright',
-    'RUYI_LOGIN_DISPLAY=vnc', 'DISPLAY=:99', 'RUYI_UPLOAD_DIR=/data/upload', 'USER pwuser',
-    'EXPOSE 5173', 'ENTRYPOINT ["/app/scripts/start-desktop.sh"]',
+    'RUYI_HEADLESS=1', 'RUYI_UPLOAD_DIR=/data/upload', 'USER pwuser', 'EXPOSE 5173',
   ]) assert(file.includes(expected), expected);
+  assert(workspace.includes('ENTRYPOINT ["node", "apps/server/src/main.js"]'));
+  assert(!/RUYI_LOGIN_DISPLAY|DISPLAY=|apt-get|start-desktop|xvfb|openbox|x11vnc/.test(workspace));
+  assert(legacy.includes('ENTRYPOINT ["/app/scripts/start-desktop.sh"]'));
   for (const name of [
     '../apps/server/src/main.js', '/apps/server/src/main.js', 'apps//server/src/main.js',
     'apps/server/src/../../main.js', 'apps/server/src/evil\\main.js', 'apps/unknown/package.json',
@@ -111,7 +116,7 @@ function layoutConfiguration() {
 }
 async function desktop(failure, signal) {
   fs.writeFileSync(log, '');
-  const child = spawn('bash', [path.join(deploy, 'scripts/start-desktop.sh')], { cwd: root, env: { ...env, RUYI_UPLOAD_DIR: path.join(root, 'workspace'), RUYI_SHUTDOWN_TIMEOUT_SECONDS: '2', TEST_FAIL: failure || '' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn('bash', [path.join(deploy, 'scripts/legacy/start-desktop.sh')], { cwd: root, env: { ...env, RUYI_UPLOAD_DIR: path.join(root, 'workspace'), RUYI_SHUTDOWN_TIMEOUT_SECONDS: '2', TEST_FAIL: failure || '' }, stdio: ['ignore', 'pipe', 'pipe'] });
   let error = '';
   child.stderr.on('data', chunk => { error += chunk; });
   let outcome;
@@ -144,7 +149,6 @@ async function desktop(failure, signal) {
 async function main() {
   layoutConfiguration();
   aptNetworkConfiguration('Dockerfile');
-  aptNetworkConfiguration('Dockerfile.workspace');
   fs.mkdirSync(repo); fs.mkdirSync(bin); fs.mkdirSync(stages);
   git(['init', '-q']);
   const source = {
@@ -187,6 +191,7 @@ else { fs.appendFileSync(process.env.TEST_CAPTURE,'\\npush'); }
   assert.strictEqual(result.status, 0, result.stderr);
   let data = JSON.parse(fs.readFileSync(capture));
   assert(data.files.Dockerfile.includes('RUN npm --prefix web ci --include=dev'));
+  assert.strictEqual(data.files['scripts/start-desktop.sh'], fs.readFileSync(path.join(deploy, 'scripts/legacy/start-desktop.sh'), 'utf8'));
   assert.strictEqual(data.files['server/routes/auth.js'], 'uncommitted-registration');
   assert.strictEqual(data.files['web/src/views/UncommittedRegister.vue'], 'untracked-registration');
   assert(data.args.includes('linux/amd64')); assert(data.args.includes('io.ruyi.source=worktree'));
@@ -282,6 +287,7 @@ else { fs.appendFileSync(process.env.TEST_CAPTURE,'\\npush'); }
   assert.strictEqual(data.files['apps/web/src/NewView.vue'], 'workspace-untracked-view');
   assert(data.files.Dockerfile.includes('COPY apps/web/package.json ./apps/web/'));
   assert(!data.files.Dockerfile.includes('web/package-lock.json'));
+  assert(!data.files['scripts/start-desktop.sh'], '新布局不得复制旧桌面启动脚本');
   assert(data.files['.dockerignore'].includes('**/dist'));
   for (const name of ['server/index.js', 'web/package.json', 'lib/safe.js', 'apps/server/src/linked.js', 'packages/automation/lib/external/safe.js', ...workspaceBlocked]) assert(!data.files[name], name);
   for (const [name, content] of Object.entries(data.files)) assert(!content.includes('FAKE_SECRET'), name);
@@ -301,6 +307,7 @@ else { fs.appendFileSync(process.env.TEST_CAPTURE,'\\npush'); }
   assert(result.stdout.includes('源码布局：legacy'));
   data = JSON.parse(fs.readFileSync(capture));
   assert(data.files.Dockerfile.includes('RUN npm --prefix web ci --include=dev'));
+  assert.strictEqual(data.files['scripts/start-desktop.sh'], fs.readFileSync(path.join(deploy, 'scripts/legacy/start-desktop.sh'), 'utf8'));
   assert(!data.files['apps/server/src/main.js']); cleanStage();
   for (const name of ['package.json', 'package-lock.json', 'apps/web/package.json', 'apps/server/package.json',
     'apps/worker/package.json', 'packages/automation/package.json', 'packages/shared/package.json',

@@ -3,7 +3,7 @@ const { randomUUID } = require('node:crypto')
 const multipart = require('@fastify/multipart')
 const { importMultipartFiles } = require('./import')
 const { registerTransferRoutes } = require('../transfer/routes')
-const { uploadRoot } = require('@ruyi/shared/config')
+const { uploadRoot, browserHeadless } = require('@ruyi/shared/config')
 const { closeBrowserContext } = require('@ruyi/automation/lib/browser.js')
 const { groupPlatformNames } = require('@ruyi/automation/lib/file-manifest')
 const { resolveWorkspace, ensureWorkspace, getWorkspaceStatus, readTaskItems } = require('@ruyi/shared/runtime/workspace')
@@ -46,14 +46,6 @@ async function registerRoutes(api, options = {}) {
       return res.send({ ok: true, sites: { ruyi: valid, datanexus: valid }, loggedIn: valid, state: summary })
     }
     return res.code(404).send({ ok: false, message: '接口不存在' })
-  })
-  api.get('/api/runtime-mode', (_req, res) => res.send({ ok: true, headless: state.headlessMode }))
-  api.post('/api/runtime-mode', (req, res) => {
-    if (typeof req.body?.headless !== 'boolean') {
-      return res.code(400).send({ ok: false, message: 'headless 必须是布尔值' })
-    }
-    state.headlessMode = req.body.headless
-    return res.send({ ok: true, headless: state.headlessMode })
   })
   api.get('/api/platform-status', async (req, res) => {
     if (req.user) {
@@ -102,7 +94,7 @@ async function registerRoutes(api, options = {}) {
       const id = randomUUID()
       const origin = auditFromRequest(req, {})
       const result = await jobs.enqueueJob(api.db, { id, userId: req.user.id, username: req.user.username,
-        task: req.params.task, headless: state.headlessMode, requestId: origin.requestId })
+        task: req.params.task, headless: browserHeadless, requestId: origin.requestId })
       if (!result.ok) return res.code(result.reason === 'busy' ? 503 : 409).send({ ok: false,
         message: result.reason === 'busy' ? '服务繁忙，请稍后重试' : '排队任务过多，请等待已有任务完成' })
       const job = await jobs.getJob(api.db, id)

@@ -1,10 +1,10 @@
+const { browserHeadless } = require('@ruyi/shared/config')
 const { launchBrowser, closeBrowserContext } = require('@ruyi/automation/lib/browser.js')
 const { withoutExtension } = require('@ruyi/shared/runtime/workspace')
 const state = require('../../state')
 
 function launchPlatformBrowser(storageState, options = {}) {
-  // 自动推进在后台运行，不能跟着用户的“调试模式”开关弹出窗口。
-  const headless = options.headless ?? state.headlessMode
+  const headless = browserHeadless
   return launchBrowser({ headless, ...(storageState ? { storageState } : {}) })
 }
 

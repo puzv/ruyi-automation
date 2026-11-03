@@ -37,10 +37,6 @@ spec:
           env:
             - name: NODE_ENV
               value: production
-            - name: RUYI_LOGIN_DISPLAY
-              value: vnc
-            - name: DISPLAY
-              value: ":99"
             - name: RUYI_UPLOAD_DIR
               value: /data/upload
             - name: RUYI_HEADLESS

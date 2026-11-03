@@ -63,9 +63,6 @@ async function auditResponse(request, reply, payload) {
       entry.detail = success ? { result: response.result } : undefined;
       break;
     case '/api/platform-state/clear': entry.action = 'platform.logout'; break;
-    case '/api/runtime-mode':
-      if (!success) return payload;
-      entry.action = 'runtime.mode_change'; entry.detail = { headless: response.headless }; break;
     default: return payload;
   }
   await writeLog(this.db, auditFromRequest(request, entry), this.log);

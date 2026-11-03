@@ -106,7 +106,7 @@ async function main() {
     assert.equal(login.json().user.mustChangePassword, false);
     assert.equal((await request('GET', '/api/auth/me', undefined, cookie)).statusCode, 200);
     assert.equal((await request('GET', '/api/admin/users', undefined, cookie)).statusCode, 403);
-    assert.equal((await request('GET', '/api/runtime-mode', undefined, cookie)).statusCode, 200);
+    assert.equal((await request('GET', '/api/status', undefined, cookie)).statusCode, 200);
     assert.equal((await request('POST', '/api/auth/register', registration, cookie)).statusCode, 409);
     const audits = await auditRows();
     assert.ok(audits.filter((row) => row.result === 'failure').every((row) => row.user_id === null));

@@ -12,7 +12,6 @@ const { registerLogsRoutes } = require("./modules/audit/routes");
 const { registerAdminUsersRoutes } = require("./modules/auth/admin-users");
 const { registerPlatformStateRoutes } = require("./modules/platform-login/state-routes");
 const { registerPlatformLoginRoutes } = require("./modules/platform-login/routes");
-const { readDisplayConfig } = require("./modules/platform-login/display");
 const { registerAutoAdvanceRoutes } = require("./modules/auto-advance/routes");
 const fastifyStatic = require("@fastify/static");
 const { registerRoutes } = require("./modules/files/routes");
@@ -40,7 +39,6 @@ function isTransferRequest(request) {
 }
 
 function buildApp(options = {}) {
-  const displayConfig = readDisplayConfig();
   const auth = options.auth ?? true;
   if (auth && !options.db) throw new Error("启用鉴权必须提供数据库连接");
   if (auth && !options.stateKeys) throw new Error("启用鉴权必须提供登录态加密密钥");
@@ -73,7 +71,7 @@ function buildApp(options = {}) {
     app.register(registerAdminUsersRoutes);
     app.register(registerLogsRoutes);
     app.register(registerPlatformStateRoutes);
-    app.register(registerPlatformLoginRoutes, { ...options.platformLogin, displayConfig });
+    app.register(registerPlatformLoginRoutes, { ...options.platformLogin });
     app.register(registerAutoAdvanceRoutes, { engine: options.autoAdvance });
   }
   const webDist = path.resolve(options.webDist ?? defaultWebDist);
@@ -82,7 +80,7 @@ function buildApp(options = {}) {
 
   app.addHook("onResponse", async (request, reply) => {
     if ((request.url.startsWith("/api/") || isTransferRequest(request)) && (request.method !== "GET" || reply.statusCode >= 400)) {
-      request.log.info(`${request.method} ${isTransferRequest(request) ? request.routeOptions.url : request.url} ${reply.statusCode} ${Math.round(reply.elapsedTime)}ms`);
+      request.log.info(`${request.method} ${isTransferRequest(request) ? request.routeOptions.url : request.url.split('?')[0]} ${reply.statusCode} ${Math.round(reply.elapsedTime)}ms`);
     }
   });
 
@@ -92,6 +90,11 @@ function buildApp(options = {}) {
       if (isTransferRequest(request)) {
         if ((error.statusCode || 500) >= 500) request.log.error(`${request.method} ${request.routeOptions.url || '/api/transfer/'} 传输请求失败`);
         return reply.code(error.statusCode || 500).send({ ok: false, message: "文件传输失败，请重新获取链接后重试" });
+      }
+      if (request.url.startsWith('/api/platform-login')) {
+        if ((error.statusCode || 500) >= 500) request.log.error('平台登录请求失败');
+        return reply.code(error.statusCode || 500).send({ ok: false,
+          message: (error.statusCode || 500) >= 500 ? '平台登录请求失败，请重新尝试' : error.message });
       }
       if ((error.statusCode || 500) >= 500) request.log.error({ err: error }, error.message);
       return reply.code(error.statusCode || 500).send({ ok: false, message: error.message });
