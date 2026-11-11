@@ -1,4 +1,5 @@
 export const actionLabels = {
+  'task.create': '创建任务', 'task.rename': '修改任务名称', 'task.resume': '恢复任务', 'task.continue': '继续任务', 'task.stop': '停止任务', 'task.file_exclude': '移除任务文件', 'task.delete': '删除任务',
   'auth.login': '登录', 'auth.register': '注册账号', 'auth.logout': '退出', 'auth.password_change': '修改密码',
   'admin.user_create': '创建用户', 'admin.user_disable': '停用用户', 'admin.user_enable': '启用用户',
   'admin.password_reset': '重置密码', 'admin.logs_view': '查看操作记录', 'file.import': '导入文件',
@@ -39,7 +40,7 @@ export function jobDuration(job, now = Date.now()) {
   return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`
 }
 const reasonLabels = { unknown_user: '用户名不存在', wrong_password: '密码错误', locked: '账号锁定', disabled: '账号停用', invalid_request: '请求无效' }
-const targetLabels = { user: '用户', file_batch: '文件批次', job: '任务', api_token: 'API 令牌' }
+const targetLabels = { user: '用户', file_batch: '文件批次', task_file: '任务文件', job: '任务', task: '任务', api_token: 'API 令牌' }
 
 export function formatTime(value) {
   if (!value) return '—'
@@ -61,13 +62,28 @@ export function logDescription(log) {
   const suffix = via === 'api_token' ? '（AI 工具）' : via === 'transfer_ticket' ? '（AI 工具 · 一次性链接）' : ''
   return describeLog(log) + suffix
 }
+export function isPlatformWaitLog(log) {
+  const detail = log.detail || {}
+  return log.action === 'job.finish' && detail.status === 'waiting_platform' && detail.outcome === 'not_ready'
+    && detail.code === 2 && !detail.signal && !detail.stateExpired
+}
+export function isLoginWaitLog(log) {
+  const detail = log.detail || {}
+  return log.action === 'job.finish' && detail.status === 'waiting_login' && detail.outcome === 'login_required' && !detail.signal
+}
 function describeLog(log) {
   const detail = log.detail || {}
+  if (isPlatformWaitLog(log)) {
+    return `${taskLabels[detail.task] || '任务'}：等待平台处理，本轮检查时平台尚未处理完成（检查退出码 2）`
+  }
+  if (isLoginWaitLog(log)) return `${taskLabels[detail.task] || '任务'}：等待重新登录，登录后需手动恢复入队`
   if (log.action === 'auth.login' && log.result === 'failure') {
     const reason = reasonLabels[detail.reason] || detail.reason
     return [log.errorMessage, reason].filter(Boolean).join('；') || '—'
   }
   if (log.result === 'failure' && log.errorMessage) return log.errorMessage
+  if (log.action === 'task.create') return `名称：${detail.name ?? '—'}，导入 ${detail.count ?? 0} 个文件`
+  if (log.action === 'task.rename') return `名称：${detail.name ?? '—'}`
   if (log.action === 'token.create') return `名称：${detail.name ?? '—'}，有效期 ${detail.expiresInDays ?? '未知'} 天`
   if (log.action === 'job.results_download') return '下载结果 ZIP'
   if (log.action === 'file.import') return `导入 ${detail.count ?? 0} 个，跳过 ${detail.skipped ?? 0} 个`

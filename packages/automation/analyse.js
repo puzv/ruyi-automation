@@ -10,6 +10,7 @@ const { checkPreflight } = require("./lib/preflight");
 const { navigateWithLogin } = require("./lib/login");
 const { requireMapping, updateStage } = require("./lib/file-manifest");
 const { TASK_OUTCOME } = require("@ruyi/shared/runtime/task-outcome");
+const taskStore = require('@ruyi/shared/runtime/task-file-store');
 
 function withoutExtension(fileName) {
   return path.basename(fileName).replace(/\.(?:txt|csv)$/i, "");
@@ -252,7 +253,10 @@ async function submitInsight(page) {
 
 async function main() {
   checkPreflight({ taskFiles: ["analyseToDoList.json", "done.json"] });
-  const { uploadRoot, fileName, donePath, listPath } = resolveTaskFromUpload();
+  const dbFile = taskStore.enabled() ? (await taskStore.pending('analyse'))[0] : null;
+  if (taskStore.enabled() && !dbFile) throw new Error('没有待处理文件');
+  const { uploadRoot, fileName, donePath, listPath } = dbFile
+    ? { uploadRoot: requireUploadRoot(), fileName: dbFile.platform_name } : resolveTaskFromUpload();
   const context = await launchBrowser();
   try {
     let page = context.pages()[0] || await context.newPage();
@@ -270,12 +274,14 @@ async function main() {
     await selectAudience(page, fileName);
     await fillTaskName(page, fileName);
     await selectInsightFilters(page);
+    if (dbFile) await taskStore.beginOperation(uploadRoot, fileName, 'analyse');
     await submitInsight(page);
-    recordDone(donePath, listPath, fileName);
-    updateStage(uploadRoot, fileName, "analysed");
+    if (!dbFile) recordDone(donePath, listPath, fileName);
+    await updateStage(uploadRoot, fileName, "analysed");
   } catch (error) {
     if (error.code === "AUDIENCE_TOO_SMALL") {
-      removeFromAnalyseList(listPath, fileName);
+      if (dbFile) await updateStage(uploadRoot, fileName, 'empty');
+      else removeFromAnalyseList(listPath, fileName);
       return;
     }
     throw error;
@@ -286,6 +292,6 @@ async function main() {
 
 main().catch((error) => {
   console.error(`分析页面操作失败：${error.message}`);
-  process.exitCode = /找不到|不可用|没有待处理|计算中|处理中|未成功选中|暂不可用/.test(error.message)
+  process.exitCode = !['TASK_DATABASE_ERROR', 'UNCERTAIN_PLATFORM_OPERATION'].includes(error.code) && /找不到|不可用|没有待处理|计算中|处理中|未成功选中|暂不可用/.test(error.message)
     ? TASK_OUTCOME.NOT_READY : TASK_OUTCOME.FAILURE;
-});
+}).finally(() => taskStore.close());

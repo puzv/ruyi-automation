@@ -7,6 +7,46 @@ const webRequire = createRequire(require.resolve('@ruyi/web/package.json'));
 const vue = webRequire('vue');
 const { parse, compileScript, compileTemplate } = webRequire('@vue/compiler-sfc');
 
+async function checkMcpDevProxy() {
+  const http = require('node:http');
+  const { pathToFileURL } = require('node:url');
+  const { createServer } = await import(pathToFileURL(webRequire.resolve('vite')).href);
+  const backend = http.createServer((req, res) => {
+    assert.equal(req.url, '/mcp');
+    assert.equal(req.method, 'POST');
+    assert.equal(req.headers.authorization, 'Bearer fixture-only');
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      assert.deepEqual(JSON.parse(body), { jsonrpc: '2.0', method: 'tools/list', id: 1 });
+      res.writeHead(401, { 'content-type': 'application/json', 'www-authenticate': 'Bearer realm="ruyi"' });
+      res.end(JSON.stringify({ code: 'UNAUTHENTICATED', message: '需要有效的 API 令牌' }));
+    });
+  });
+  await new Promise((resolve) => backend.listen(0, '127.0.0.1', resolve));
+  const oldPort = process.env.RUYI_SERVER_PORT;
+  let vite;
+  try {
+    process.env.RUYI_SERVER_PORT = String(backend.address().port);
+    vite = await createServer({ configFile: path.resolve(__dirname, '../apps/web/vite.config.js'),
+      root: path.resolve(__dirname, '../apps/web'), logLevel: 'silent',
+      server: { host: '127.0.0.1', port: 0, watch: null } });
+    await vite.listen();
+    const response = await fetch(`http://127.0.0.1:${vite.httpServer.address().port}/mcp`, {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer fixture-only' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: 1 }),
+    });
+    assert.equal(response.status, 401, 'Vite 同源 /mcp 必须转发后端鉴权响应，不能返回 404 或页面');
+    assert.equal(response.headers.get('www-authenticate'), 'Bearer realm="ruyi"');
+    assert.equal((await response.json()).code, 'UNAUTHENTICATED');
+  } finally {
+    if (vite) await vite.close();
+    await new Promise((resolve) => backend.close(resolve));
+    if (oldPort === undefined) delete process.env.RUYI_SERVER_PORT;
+    else process.env.RUYI_SERVER_PORT = oldPort;
+  }
+}
+
 function mount({ secure = true, clipboard = true, fallback = true, clipboardFails = false } = {}) {
   const filename = path.resolve(__dirname, '../apps/web/src/views/ApiTokensView.vue');
   const { descriptor } = parse(fs.readFileSync(filename, 'utf8'), { filename });
@@ -42,6 +82,7 @@ function mount({ secure = true, clipboard = true, fallback = true, clipboardFail
 }
 
 async function main() {
+  await checkMcpDevProxy();
   const page = mount();
   await page.start();
   assert.equal(page.view.items.value[0].name, '我的 AI 工具');

@@ -1,69 +1,39 @@
 ---
 name: ruyi-audience
-description: |
-  如翼 / DataNexus 人群包自动化平台操作手册。当用户要求上传 idfa / oaid / pn 人群包文件、
-  创建人群包、做人群洞悉（分析）、下载洞悉结果，或询问人群包任务进度时使用。
-  依赖已接入的 ruyi MCP 服务（工具 get_overview、prepare_upload、run_task、wait_for_job 等）。
+description: 如翼 / DataNexus 整任务操作手册；上传 idfa、oaid、pn 文件，自动创建人群包、洞悉、下载结果，或查询任务进度时使用，依赖 ruyi MCP。
 ---
 
-# 如翼人群包流程
+# 如翼整任务
 
-## 前置检查
+先调用 `get_overview` 检查平台登录与当前整任务。没有 ruyi 工具时，请用户在平台「API 令牌 → 接入 AI 工具」按接入说明配置；不要尝试绕过认证。
+平台登录不是 valid 时，给出 platformLogin.loginUrl，等待用户本人登录，不反复重试。
 
-先调用 `get_overview`，读取工作区计数、`platformLogin`、`activeJob`、`autoAdvance` 与下一步建议。
-若没有 ruyi 系列工具，告诉用户打开平台「API 令牌 → 接入 AI 工具」（`<平台地址>/#/api-tokens`），按 `docs/MCP_USAGE.md` 接入后停止。
-平台状态不是 `valid` 时给出返回的 `platformLogin.loginUrl`，等待用户亲自登录后再继续。
-已有排队或运行任务时先等待，不重复导入或提交；只问进度时只用只读工具并报告当前阶段。
-字段、阶段及完成条件见 [references/workflow.md](references/workflow.md)；完整调用示例见 [references/examples.md](references/examples.md)。
+每次上传会创建独立整任务，自动执行上传、创建人群包、洞悉和下载；同一用户先进先出、同时运行一个任务。
+用户明确要求全流程时直接完成，无需逐阶段确认。用户只要求单独上传、创建或洞悉时，先解释新系统自动执行全流程，确认其是否接受，不擅自扩大授权。
+已有运行任务不妨碍创建另一任务排队；同任务内文件名不能重复，跨任务可同名。每次上传是一个任务，不随意分批导致多个任务。
 
-## 标准流程与授权
+1. 只列出用户指定目录的普通文件名，筛选文件名包含 idfa、oaid 或 pn 且扩展名为 txt/csv 的非隐藏文件。不读取、预览或统计内容。
+2. 调用 `prepare_upload`，使用一次性 uploadUrl，在一条 curl 中以多个 files 字段上传全部文件。可加 name 字段设置任务名；不把长期令牌写入 curl。链接有效期 10 分钟、只能使用一次。
+3. 上传响应为 201，保留 taskId（也见 item.id），核对 item.fileCount / skipped。上传成功已自动入队，不调用旧单步骤执行工具。响应丢失先 `list_tasks` 核对，避免重复上传。
+4. 用 `get_task` 查询，或循环 `wait_for_task`（单次最多 50 秒）。queued / running 继续等待；timedOut 不代表失败。平台尚未处理完成时保持 running，后台默认每 30 秒重试。
+5. succeeded 后用 `prepare_download` 传整任务 taskId，curl 直接保存 ZIP 到用户指定目录。未指定目录先询问，不覆盖已有文件。下载后仅报告路径和文件元数据大小，不解压或读取结果内容，除非用户明确要求查看。
 
-导入 → upload → 等平台处理文件 → create → 等平台生成人群 → analyse → 等洞悉结果 → download → prepare_download 取回 ZIP。
-用户要求“跑完整个流程”或类似表述时，直接按流程执行各步骤，不需要每步征求确认或事先说明；在上传完成、各任务完成、结果保存等关键节点简要汇报进度即可。
-用户只要求单个步骤时，只做该步骤，不自动继续后续步骤。
-只有出现任务失败、计数与预期不符、工作区已有其他批次待办、等待超过 30 分钟、文件清单中有不合规文件需要用户取舍等异常时，才停下说明并询问，不把异常当作继续执行的授权。
+等待某阶段超过 30 分钟，汇报阶段并询问是否继续等待。
+只问进度时只使用只读工具，不上传、不停止、不恢复。
 
-1. **导入文件**：确认用户路径，只用 shell 列出普通文件的文件名，筛选名称含 idfa / oaid / pn 且扩展名为 .txt / .csv（大小写不敏感、排除点开头文件）。按筛选清单直接调用 `prepare_upload`；不合规文件被跳过时在汇报中说明，需要用户取舍时先停下询问。
-   只看文件名，绝不读取、预览或统计文件内容，不使用 cat / head / wc 等内容命令。
-   用返回的 `uploadUrl` 在一条 curl 中以多个 `-F 'files=@绝对路径'` 上传全部文件，正确转义路径；不要把长期令牌加进 curl。
-   文件很多时分批，每批重新获取地址；地址 10 分钟有效且只能用一次。检查导入响应 `count` / `skipped`，与筛选清单不符时停止说明并询问。
-2. **上传平台**：重新 `get_overview`，确认 `workspace.pendingUpload` 的变化符合导入结果，调用 `run_task({task:"upload"})`。
-   取得 `jobId` 后循环 `wait_for_job`（单次最多 50 秒）；`timedOut:true` 只是仍在执行。
-   只有 `status:"succeeded"` 才是任务成功，随后核对概览中待上传减少、待创建出现；其他终态必须处理后再继续。
-3. **创建**：`workspace.createCount > 0` 仅代表有待办。未开自动推进时，等 `check_platform` 的 `ready.create:true`，提交 `run_task({task:"create"})` 并等待成功；再核对待创建减少、待洞悉出现。
-4. **洞悉**：`workspace.analyseCount > 0` 时等 `ready.analyse:true`，提交 `run_task({task:"analyse"})` 并等待成功；再核对待洞悉减少、待下载出现。
-5. **下载**：`workspace.doneCount > 0` 时等 `ready.download:true`（或自动推进 `phase:"resultsReady"`），提交 `run_task({task:"download"})` 并等待成功，核对 `resultFiles` 和最新工作区状态。
-   若概览已有本批下载的 `resultJob`，先核对任务与产物，避免重复下载；失败任务虽可能有部分结果，不能声称全流程成功。
+## 状态与恢复
 
-## 平台等待与自动推进
+- waiting_login：给登录地址并停止等待；用户登录后明确要求恢复，才用 `resume_task`。说明它会恢复当前用户所有等待登录任务，confirm 传 true。
+- interrupted：保留已完成步骤；用户明确要求后用 `continue_task`，从未完成步骤重新入队。
+- failed / cancelled：说明原因与已完成范围，不自动重复创建或重新执行。
+- `stop_task`：仅按用户明确指令停止；退出后为 interrupted，可以继续。
+- `delete_task`：软删除非运行任务；运行任务需先停止。删除与停止是不同操作。
+- `list_task_files`：查看原始文件名；`exclude_task_file` 仅在任务开始前移除，最后一个被移除会取消任务。
+- `rename_task`：改名；写操作优先传查询到的 version，冲突则刷新，不盲目覆盖。
 
-平台处理文件、生成人群、生成洞悉结果通常需几分钟到几十分钟；本地任务成功不代表平台已就绪。
-自动推进已开启时，平台就绪后后台会自动提交 create / analyse：只需定期 `get_overview`，间隔不少于 2 分钟；有 `activeJob` 时用 `wait_for_job`，不要重复提交或额外频繁检查平台。
-自动推进不会上传或下载；`resultsReady` 后仍需提交 download。
-未开启时用 `check_platform` 判断就绪，两次调用间隔不少于 2 分钟。以结构化 `ready` 为准，不因待处理数为零或摘要文字就自行推定成功。
-等待一个平台阶段超过 30 分钟仍未就绪，汇报当前计数、阶段及任务并询问是否继续等待，不无限轮询。
-可询问用户是否开启自动推进以减少等待操作；未经同意不要调用 `set_auto_advance` 修改设置。出现 stalled / error 时说明异常，不用开关重置来绕过问题。
+旧 list_jobs / get_job / wait_for_job / cancel_job 仅为整任务别名，其中 jobId 也必须传整任务编号。
+run_task / set_auto_advance 已弃用，不能用它们执行旧工作区步骤。
 
-## 保存结果
+不得读取或向模型传输人群文件与结果文件内容；不得输出令牌、登录态、凭据或票据原文。一次性地址仅用于 curl。日志只摘述必要且无敏感数据的原因，不替用户登录。
 
-download 成功后调用 `prepare_download({jobId:"下载任务 ID"})`，用返回的 `downloadUrl` 配合 curl 保存到用户指定目录；未指定目录先询问。
-例如 `curl -sS -fL -o '/绝对目录/ruyi-results-任务ID.zip' '<downloadUrl>'`；先确认目录存在，不覆盖用户已有文件。
-保存成功后仅通过文件元数据取得大小，告知绝对路径与大小。不要解压或读取结果内容，除非用户明确要求查看。
-
-## 异常处理
-
-| 情况 | 处理 |
-|---|---|
-| 平台未登录 / 登录失效 | 给出登录地址并停止，用户登录后再继续 |
-| 409 已有任务运行 / 平台检查正在进行 | 对当前任务用 `wait_for_job`，或等待 1–2 分钟后再检查；平台检查之间至少 2 分钟，不连续重试 |
-| 任务 failed | 用 `get_job` 看 `logTail`，说明原因并停止；未经用户确认不重提，同一任务自动重复提交不得超过 1 次 |
-| 上传地址失效（404） | 重新 `prepare_upload`；其他传输失败也先核对概览，避免重复导入已成功文件 |
-| 令牌无效（401） | 让用户在平台「API 令牌」页重新生成并更新 MCP 配置 |
-| 任务 cancelled / interrupted 或数量异常 | 汇报状态与已完成范围，等待用户决定，不继续下一阶段 |
-
-## 禁止事项
-
-- 不读取、输出、转述人群文件内容，不把内容传给模型或工具；只允许 curl 直接传输。
-- 不在回复中展示上传 / 下载地址以外的敏感信息，不输出令牌、票据原文或平台登录态；日志仅摘述不含敏感数据的必要原因。
-- 不尝试绕过平台登录，不替用户登录。
-- 不取消非本次对话提交的任务，除非用户明确要求；`cancel_job` 前说明影响。
+字段说明见 [references/workflow.md](references/workflow.md)，调用示例见 [references/examples.md](references/examples.md)。

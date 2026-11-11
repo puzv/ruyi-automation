@@ -8,6 +8,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': { target: `http://127.0.0.1:${process.env.RUYI_SERVER_PORT || 5174}`, ws: true },
+      '/mcp': { target: `http://127.0.0.1:${process.env.RUYI_SERVER_PORT || 5174}` },
     },
   },
 })

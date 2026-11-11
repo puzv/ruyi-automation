@@ -4,6 +4,7 @@ const { sql } = require("kysely");
 const { createDb, readDbConfig } = require("../db");
 const users = require("@ruyi/shared/runtime/repos/users");
 const jobs = require("@ruyi/shared/runtime/repos/jobs");
+const { listJobBatches } = require('@ruyi/shared/runtime/repos/job-batches');
 
 const usernames = ["jobs_repo_a", "jobs_repo_b"];
 
@@ -291,6 +292,9 @@ async function testRepo(db, userA, userB) {
   await assertLockFree(db);
   assert.equal(await jobs.withClaimLock(db, async () => "已获取"), "已获取");
 
+  await resetJobs();
+  await testBatchListing(db, userA, userB);
+  await resetJobs();
   for (const task of ["create", "analyse", "download"]) await enqueue(userA, { task });
   await assert.rejects(jobs.enqueueJob(db, {
     id: randomUUID(), userId: userB, username: "非法任务", task: "invalid",
@@ -300,6 +304,39 @@ async function testRepo(db, userA, userB) {
   await assert.rejects(db.updateTable("ruyi_jobs").set({ status: "invalid" }).where("id", "=", enumId).execute(),
     (error) => ["WARN_DATA_TRUNCATED", "ER_TRUNCATED_WRONG_VALUE_FOR_FIELD"].includes(error.code));
   assert.equal((await jobs.getJob(db, enumId)).status, "queued");
+}
+
+async function testBatchListing(db, userA, userB) {
+  const ids = Array.from({ length: 10 }, () => randomUUID());
+  const start = new Date('2026-10-20T00:00:00Z').getTime();
+  const row = (index, task, status, userId = userA, tick = index) => ({
+    id: ids[index], user_id: userId, username: userId === userA ? '批次用户甲' : '批次用户乙',
+    task, status, queued_at: new Date(start + tick * 1000),
+  });
+  await db.insertInto('ruyi_jobs').values([
+    row(0, 'analyse', 'failed'), // 没有上传来源的旧执行独立展示。
+    row(1, 'upload', 'succeeded'), row(2, 'create', 'failed'), row(3, 'create', 'succeeded'),
+    row(4, 'analyse', 'succeeded'), row(5, 'download', 'succeeded'),
+    row(6, 'upload', 'succeeded'), row(7, 'create', 'running', userA, 6), // 同毫秒入队。
+    row(8, 'upload', 'succeeded', userB), row(9, 'create', 'queued', userB),
+  ]).execute();
+  const first = await listJobBatches(db, { userId: userA, pageSize: 1 });
+  assert.equal(first.total, 3);
+  assert.equal(first.items[0].id, ids[6]);
+  assert.deepEqual(first.items[0].rows.map((item) => item.id).sort(), [ids[6], ids[7]].sort());
+  const second = await listJobBatches(db, { userId: userA, pageSize: 1, page: 2 });
+  assert.equal(second.items[0].id, ids[1]);
+  assert.equal(second.items[0].rows.length, 5, '批次分页不能截断流程或重试记录');
+  const success = await listJobBatches(db, { userId: userA, status: 'succeeded' });
+  assert.equal(success.total, 1, '重试成功后不能继续按历史失败筛选');
+  assert.equal(success.items[0].rows.length, 5);
+  const failed = await listJobBatches(db, { userId: userA, status: 'failed' });
+  assert.deepEqual(failed.items.map((item) => item.id), [ids[0]]);
+  const other = await listJobBatches(db, { username: '批次用户乙', status: 'queued' });
+  assert.equal(other.total, 1);
+  assert.ok(other.items[0].rows.every((item) => Number(item.user_id) === Number(userB)));
+  assert.equal((await listJobBatches(db, { userId: userA, status: 'waiting' })).total, 0);
+  assert.deepEqual(await listJobBatches(db, { userId: userA, page: 99 }), { items: [], total: 3 });
 }
 
 async function main() {

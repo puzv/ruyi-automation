@@ -104,7 +104,8 @@ onBeforeUnmount(() => {
     <LoginView v-if="!currentUser && !error" @logged-in="loggedIn" />
     <ChangePasswordView v-else-if="currentUser?.mustChangePassword" forced @changed="passwordChanged" @logout="logout" />
     <WorkbenchView v-else-if="currentUser" ref="workbench" :current-user="currentUser" :page="page" @logout="logout">
-      <template v-if="page !== '/'" #default>
+      <template #default>
+        <MyJobsView v-if="page === '/'" />
         <PlatformLoginView v-if="page === '/platform-login'" :current-user="currentUser" @state-changed="workbench?.refreshPlatformState()" />
         <MyLogsView v-else-if="page === '/logs'" />
         <ApiTokensView v-else-if="page === '/api-tokens'" />

@@ -24,6 +24,7 @@ async function registerRoutes(api, options = {}) {
   const loadState = async (req) => {
     try { return await loadUserState(api.db, req.user.id, api.stateKeys) } catch (_) { return null }
   }
+  const canImportFiles = options.auth ? async (req) => Boolean(await loadState(req)) : undefined
   api.removeContentTypeParser('application/json')
   api.addContentTypeParser('application/json', { parseAs: 'string', bodyLimit: 2 * 1024 * 1024 }, (_req, body, done) => {
     try { done(null, body === '' ? {} : JSON.parse(body)) } catch (error) {
@@ -33,6 +34,7 @@ async function registerRoutes(api, options = {}) {
   })
   // 沿用内存接收行为；后续阶段改为流式写盘，暂将单文件上限设为 1GB。
   await api.register(multipart, { limits: { fileSize: 1024 * 1024 * 1024, parts: Infinity, files: Infinity, fields: Infinity, fieldSize: 1024 * 1024 } })
+  if (options.auth) await require('../tasks/routes').registerTaskRoutes(api, { dataRoot, canImportFiles })
   api.addHook('onClose', async () => {
     await cleanupJobStates()
     for (const context of [...state.activeContexts]) await closeBrowserContext(context).catch(() => {})
@@ -84,7 +86,7 @@ async function registerRoutes(api, options = {}) {
     }
   })
   api.post('/api/import-folder', async (req, res) => {
-    return importMultipartFiles(req, res, { workspace: workspaceFor(req), userHasRunningJob })
+    return importMultipartFiles(req, res, { workspace: workspaceFor(req), userHasRunningJob, canImportFiles })
   })
   api.post('/api/run/:task', async (req, res) => {
     const script = scripts[req.params.task]
@@ -138,7 +140,7 @@ async function registerRoutes(api, options = {}) {
     }
   })
   if (options.auth) {
-    await registerTransferRoutes(api, { dataRoot, userHasRunningJob })
+    await registerTransferRoutes(api, { dataRoot, userHasRunningJob, canImportFiles })
     await registerJobRoutes(api, { dataRoot })
   } else {
     api.get('/api/jobs/:id', (req, res) => {

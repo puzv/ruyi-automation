@@ -8,6 +8,7 @@ const { requireUploadRoot } = require("./lib/paths");
 const { readJsonArray } = require("./lib/files");
 const { checkPreflight, waitForProfileRelease } = require("./lib/preflight");
 const { TASK_OUTCOME } = require("@ruyi/shared/runtime/task-outcome");
+const taskStore = require('@ruyi/shared/runtime/task-file-store');
 
 const readDone = (donePath) => readJsonArray(donePath, "完成清单").filter((name) => typeof name === "string");
 
@@ -33,6 +34,7 @@ function runDownload() {
 
 function main({ spawnDownload = runDownload, root, donePath: donePathOption, log = console.log,
   preflight = true } = {}) {
+  if (taskStore.enabled()) return taskStore.runAll('download', require.resolve('./download.js')).then((code) => ({ ok: code === TASK_OUTCOME.SUCCESS, code }));
   // 测试只关心结束判定，允许跳过依赖真实 profile 与浏览器目录的启动前检查。
   if (preflight) checkPreflight({ taskFiles: ["done.json"] });
   const uploadRoot = root || requireUploadRoot();
@@ -89,15 +91,14 @@ function main({ spawnDownload = runDownload, root, donePath: donePathOption, log
 
 // 仅直接运行时执行；被测试 require 时只导出函数。
 if (require.main === module) {
-  try {
-    const result = main();
+  Promise.resolve().then(() => main()).then((result) => {
     // 退出码 2 表示“未就绪，可稍后重试”，Worker 据此判为未成功，
     // 避免留下成功但没有可下载文件的任务记录。
-    if (!result.ok) process.exitCode = TASK_OUTCOME.NOT_READY;
-  } catch (error) {
+    if (!result.ok) process.exitCode = result.code || TASK_OUTCOME.NOT_READY;
+  }).catch((error) => {
     console.error(`批量下载失败：${error.message}`);
     process.exitCode = 1;
-  }
+  }).finally(() => taskStore.close());
 }
 
 module.exports = { main, runDownload };

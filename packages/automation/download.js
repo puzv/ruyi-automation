@@ -10,6 +10,7 @@ const { launchBrowser, closeBrowserContext } = require("./lib/browser");
 const { checkPreflight } = require("./lib/preflight");
 const { requireMapping, saveDownloadedFile } = require("./lib/file-manifest");
 const { TASK_OUTCOME } = require("@ruyi/shared/runtime/task-outcome");
+const taskStore = require('@ruyi/shared/runtime/task-file-store');
 
 function resolveDoneTask() {
   const uploadRoot = requireUploadRoot();
@@ -307,7 +308,7 @@ async function clickDownload(page, expectedTitles = [], task = {}) {
         }
         const uploadRoot = task.uploadRoot || requireUploadRoot();
         const platformName = task.fileName || expectedTitles[0];
-        const targetPath = saveDownloadedFile(uploadRoot, platformName, file.suggestedFilename(), filePath);
+        const targetPath = await saveDownloadedFile(uploadRoot, platformName, file.suggestedFilename(), filePath);
         console.log(`已保存下载文件：${targetPath}`);
         return true;
       }
@@ -324,7 +325,10 @@ async function clickDownload(page, expectedTitles = [], task = {}) {
 
 async function main() {
   checkPreflight({ taskFiles: ["done.json"] });
-  const { fileName, donePath, uploadRoot } = resolveDoneTask();
+  const dbFile = taskStore.enabled() ? (await taskStore.pending('download'))[0] : null;
+  if (taskStore.enabled() && !dbFile) throw new Error('没有待处理文件');
+  const { fileName, donePath, uploadRoot } = dbFile
+    ? { fileName: dbFile.platform_name, uploadRoot: requireUploadRoot() } : resolveDoneTask();
 
   let context;
   try {
@@ -347,7 +351,7 @@ async function main() {
     const expectedTitles = getExpectedTitles(fileName, selectedTitle);
     await ensureTaskReady(page, fileName, selectedTitle);
     if (!await clickDownload(page, expectedTitles, { uploadRoot, fileName })) throw new Error("下载未成功，保留完成清单中的文件名以便重试");
-    removeDoneFile(donePath, fileName);
+    if (!dbFile) removeDoneFile(donePath, fileName);
   } finally {
     await closeBrowserContext(context);
   }
@@ -358,7 +362,7 @@ if (require.main === module) {
     console.error(`下载任务失败：${error.message}`);
     process.exitCode = /下载未就绪|排队中|计算中|处理中|生成中|不可用/.test(error.message)
       ? TASK_OUTCOME.NOT_READY : TASK_OUTCOME.FAILURE;
-  });
+  }).finally(() => taskStore.close());
 }
 
 module.exports = {

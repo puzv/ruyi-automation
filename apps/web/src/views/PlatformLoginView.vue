@@ -71,7 +71,7 @@ function acceptSession(value) {
       await refreshSummary()
       if (disposed) return
       sessionStorage.removeItem(storageKey)
-      location.hash = '#/'
+      location.hash = '#/jobs'
     }, 2000)
   } else {
     sessionStorage.removeItem(storageKey)
@@ -215,7 +215,7 @@ onBeforeUnmount(() => {
       <div class="platform-site-progress">
         <span v-for="site in [{ key: 'ruyi', label: '如翼' }, { key: 'datanexus', label: 'DataNexus' }]" :key="site.key" :class="['result-badge', session.sites?.[site.key] ? 'success' : '']">{{ site.label }}：{{ session.sites?.[site.key] ? '已登录' : '等待登录' }}</span>
       </div>
-      <p :class="session.status === 'succeeded' ? 'form-success' : 'page-description'" role="status">{{ session.message }}{{ session.status === 'succeeded' ? '，2 秒后自动返回操作面板' : '' }}</p>
+      <p :class="session.status === 'succeeded' ? 'form-success' : 'page-description'" role="status">{{ session.message }}{{ session.status === 'succeeded' ? '，2 秒后自动返回我的任务' : '' }}</p>
       <template v-if="active">
         <p class="page-description">剩余时间：{{ countdown }}</p>
         <div class="platform-qr-login">

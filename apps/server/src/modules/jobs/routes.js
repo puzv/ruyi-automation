@@ -1,9 +1,29 @@
 const fs = require('node:fs/promises')
+const fsSync = require('node:fs')
 const { constants } = require('node:fs')
 const path = require('node:path')
 const jobs = require('@ruyi/shared/runtime/repos/jobs')
+const { listJobBatches } = require('@ruyi/shared/runtime/repos/job-batches')
+const { summarizeBatch } = require('@ruyi/shared/runtime/job-batches')
 const { resolveWorkspace } = require('@ruyi/shared/runtime/workspace')
 const { resultEntries, zipStream } = require('@ruyi/shared/runtime/job-results')
+const databaseResults = require('@ruyi/shared/runtime/db-job-results')
+const { UUID } = require('@ruyi/shared/runtime/task-workspace')
+
+function jobWorkspace(row, dataRoot) {
+  const workspace = resolveWorkspace({ username: row.username }, dataRoot)
+  if (!row.task_id) return workspace
+  if (!UUID.test(row.task_id)) throw new Error('任务工作区编号无效')
+  let target = workspace
+  for (const segment of ['tasks', row.task_id, 'execution']) {
+    target = path.join(target, segment)
+    try {
+      const stat = fsSync.lstatSync(target)
+      if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('任务工作区路径不安全')
+    } catch (error) { if (error.code !== 'ENOENT') throw error }
+  }
+  return target
+}
 
 // 成功与失败的下载任务都可能带有已封存的部分结果；排队、运行中和取消的任务不会有可用清单。
 const RESULT_STATUSES = ['succeeded', 'failed']
@@ -26,15 +46,17 @@ async function publicJob(db, row, dataRoot) {
   // 早期版本会把没有任何文件的下载任务记成成功，仅看 status 会误导用户。
   // 失败的下载任务若已写入部分文件，同样可以取回（清单已封存，不会再变）。
   if (job.task === 'download' && RESULT_STATUSES.includes(job.status) && dataRoot) {
-    job.resultFiles = await resultFileCount(row, dataRoot)
+    job.resultFiles = await resultFileCount(db, row, dataRoot)
   }
   return job
 }
 
 // 读失败或没有归档都返回 0：宁可少显示一个按钮，也不要给出点不开的入口。
-async function resultFileCount(row, dataRoot) {
+async function resultFileCount(db, row, dataRoot) {
   try {
-    const workspace = resolveWorkspace({ username: row.username }, dataRoot)
+    const workspace = jobWorkspace(row, dataRoot)
+    if (row.task_id) return (await databaseResults.resultEntries(workspace, row.id,
+      { db, taskId: row.task_id, userId: row.user_id })).files.length
     const file = path.join(workspace, 'job-results', row.id, 'manifest.json')
     const content = await fs.readFile(file, 'utf8')
     const manifest = JSON.parse(content)
@@ -49,7 +71,7 @@ async function readJobLog(row, dataRoot, maxBytes) {
   const missingMessage = ['queued', 'running'].includes(row.status) ? '' : '（任务日志文件缺失，无法读取原始输出）\n'
   let file
   try {
-    const workspace = resolveWorkspace({ username: row.username }, dataRoot)
+    const workspace = jobWorkspace(row, dataRoot)
     const dir = path.join(workspace, 'logs')
     if ((await fs.lstat(dir)).isSymbolicLink()) return { output: '', truncated: false }
     file = await fs.open(path.join(workspace, row.log_path), constants.O_RDONLY | constants.O_NOFOLLOW)
@@ -73,6 +95,7 @@ async function registerJobRoutes(app, { dataRoot }) {
   app.get('/api/jobs', async (req, reply) => {
     const paging = pagination(req.query)
     if (!paging) return reply.code(400).send({ ok: false, message: '分页参数必须为正整数' })
+    if (req.query.grouped === '1') return groupedList({ userId: req.user.id, ...paging }, false)
     const result = await jobs.listJobs(app.db, { userId: req.user.id, ...paging })
     return { ok: true, ...result, items: await Promise.all(result.items.map((row) => publicJob(app.db, row, dataRoot))), ...paging }
   })
@@ -101,7 +124,7 @@ async function registerJobRoutes(app, { dataRoot }) {
   app.get('/api/jobs/:id/results.zip', async (req, reply) => {
     const result = await resultsFor(app, req, reply, dataRoot)
     if (!result) return
-    const stream = zipStream(result.workspace, req.params.id, result.entries)
+    const stream = (result.database ? databaseResults.zipStream : zipStream)(result.workspace, req.params.id, result.entries)
     reply.raw.once('close', () => stream.destroy())
     return reply.header('Cache-Control', 'private, no-store')
       .header('X-Content-Type-Options', 'nosniff')
@@ -116,24 +139,59 @@ async function registerJobRoutes(app, { dataRoot }) {
   app.get('/api/admin/jobs', async (req, reply) => {
     const paging = pagination(req.query)
     if (!paging) return reply.code(400).send({ ok: false, message: '分页参数必须为正整数' })
-    if (req.query.status && !['queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted'].includes(req.query.status)) {
+    if (req.query.status && !['queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted', ...(req.query.grouped === '1' ? ['waiting'] : [])].includes(req.query.status)) {
       return reply.code(400).send({ ok: false, message: '任务状态无效' })
     }
+    if (req.query.grouped === '1') return groupedList({ username: req.query.username, status: req.query.status, ...paging }, true)
     const result = await jobs.listJobs(app.db, { username: req.query.username, status: req.query.status, ...paging })
     return { ok: true, ...result, items: await Promise.all(result.items.map(async (row) => ({
       ...await publicJob(app.db, row), username: row.username,
     }))), ...paging }
   })
+  app.get('/api/admin/jobs/:id/log', async (req, reply) => {
+    const row = await jobs.getJob(app.db, req.params.id)
+    if (!row) return notFound(reply)
+    const { output, truncated } = await readJobLog(row, dataRoot, 5 * 1024 * 1024)
+    return reply.type('text/plain; charset=utf-8').send(`${truncated ? '（日志过长，仅显示最后 5MB）\n' : ''}${output}`)
+  })
+  app.get('/api/admin/jobs/:id/results', async (req, reply) => {
+    const result = await resultsFor(app, req, reply, dataRoot, true)
+    if (!result) return
+    return { ok: true, count: result.entries.files.length, size: result.entries.size }
+  })
+  app.get('/api/admin/jobs/:id/results.zip', async (req, reply) => {
+    const result = await resultsFor(app, req, reply, dataRoot, true)
+    if (!result) return
+    const stream = (result.database ? databaseResults.zipStream : zipStream)(result.workspace, req.params.id, result.entries)
+    reply.raw.once('close', () => stream.destroy())
+    return reply.header('Cache-Control', 'private, no-store')
+      .header('X-Content-Type-Options', 'nosniff')
+      .header('Content-Disposition', `attachment; filename="ruyi-results-${req.params.id}.zip"`)
+      .header('Content-Length', result.entries.size).type('application/zip').send(stream)
+  })
+
+  async function groupedList(options, admin) {
+    const result = await listJobBatches(app.db, options)
+    const items = await Promise.all(result.items.map(async (batch) => {
+      const records = await Promise.all(batch.rows.map(async (row) => ({
+        ...await publicJob(app.db, row, admin ? null : dataRoot), username: row.username,
+      })))
+      return summarizeBatch(batch.id, records)
+    }))
+    return { ok: true, items, total: result.total, page: options.page, pageSize: options.pageSize }
+  }
 }
 
-async function resultsFor(app, req, reply, dataRoot) {
-  const row = await jobs.getJobForUser(app.db, req.params.id, req.user.id)
+async function resultsFor(app, req, reply, dataRoot, admin = false) {
+  const row = admin ? await jobs.getJob(app.db, req.params.id) : await jobs.getJobForUser(app.db, req.params.id, req.user.id)
   if (!row) { reply.code(404).send({ ok: false, message: '任务不存在' }); return null }
   if (row.task !== 'download' || !RESULT_STATUSES.includes(row.status)) {
     reply.code(409).send({ ok: false, message: '仅已结束的下载结果任务可以下载 ZIP' }); return null
   }
   try {
-    const workspace = resolveWorkspace(req.user, dataRoot)
+    const workspace = jobWorkspace({ ...row, username: row.username || req.user.username }, dataRoot)
+    if (row.task_id) return { workspace, database: true, entries: await databaseResults.resultEntries(workspace, row.id,
+      { db: app.db, taskId: row.task_id, userId: row.user_id }) }
     return { workspace, entries: resultEntries(workspace, row.id) }
   } catch (error) {
     reply.code(409).send({ ok: false, message: error.code === 'ENOENT'
@@ -144,4 +202,4 @@ async function resultsFor(app, req, reply, dataRoot) {
   }
 }
 
-module.exports = { registerJobRoutes, resultsFor }
+module.exports = { registerJobRoutes, resultsFor, readJobLog, jobWorkspace }

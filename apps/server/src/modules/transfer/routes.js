@@ -1,12 +1,15 @@
-const { resolveWorkspace } = require('@ruyi/shared/runtime/workspace');
+const tasks = require('@ruyi/shared/runtime/repos/tasks');
+const jobs = require('@ruyi/shared/runtime/repos/jobs');
 const { zipStream } = require('@ruyi/shared/runtime/job-results');
+const databaseResults = require('@ruyi/shared/runtime/db-job-results');
 const { writeLog, auditFromRequest } = require('@ruyi/shared/runtime/audit');
 const { publicUser } = require('../auth/session');
-const { importMultipartFiles } = require('../files/import');
+const { createFromMultipart } = require('../tasks/import');
+const { safeError } = require('../tasks/routes');
 const { resultsFor } = require('../jobs/routes');
 const { consumeTicket } = require('./repository');
 
-async function registerTransferRoutes(app, { dataRoot, userHasRunningJob }) {
+async function registerTransferRoutes(app, { dataRoot, canImportFiles }) {
   const claim = async (req, reply, purpose) => {
     const ticket = await consumeTicket(app.db, { secret: req.params.ticket, purpose });
     if (!ticket) {
@@ -20,11 +23,11 @@ async function registerTransferRoutes(app, { dataRoot, userHasRunningJob }) {
     onRequest: async (req, reply) => { await claim(req, reply, 'upload'); },
   }, async (req, reply) => {
     try {
-      return await importMultipartFiles(req, reply, {
-        workspace: resolveWorkspace(req.user, dataRoot), userHasRunningJob, includeFiles: true,
-      });
-    } catch (_) {
-      return reply.code(500).send({ ok: false, message: '文件导入失败，请重新获取链接后重试' });
+      const item = await createFromMultipart(req, { db: app.db, root: dataRoot, canImportFiles });
+      app.worker?.wake();
+      return reply.code(201).send({ ok: true, item, taskId: item.id, message: '整任务已创建并加入执行队列，将自动完成上传、创建、洞悉和下载' });
+    } catch (error) {
+      return safeError(reply, error);
     }
   });
   app.get('/api/transfer/download/:ticket', {
@@ -34,6 +37,11 @@ async function registerTransferRoutes(app, { dataRoot, userHasRunningJob }) {
     },
   }, async (req, reply) => {
     const jobId = req.transferJobId;
+    const job = await jobs.getJobForUser(app.db, jobId, req.user.id);
+    const task = job?.task_id && await tasks.getTaskForUser(app.db, job.task_id, req.user.id);
+    if (!task || task.status !== 'succeeded' || job.task !== 'download' || job.status !== 'succeeded') {
+      return reply.code(404).send({ ok: false, message: '整任务结果不存在或不可下载，请重新获取链接' });
+    }
     req.params.id = jobId;
     const result = await resultsFor(app, req, reply, dataRoot);
     await writeLog(app.db, auditFromRequest(req, {
@@ -42,7 +50,7 @@ async function registerTransferRoutes(app, { dataRoot, userHasRunningJob }) {
       ...(!result ? { errorMessage: '任务结果不可下载，请重新获取链接' } : {}),
     }), app.log);
     if (!result) return;
-    const stream = zipStream(result.workspace, jobId, result.entries);
+    const stream = (result.database ? databaseResults.zipStream : zipStream)(result.workspace, jobId, result.entries);
     reply.raw.once('close', () => stream.destroy());
     return reply.header('Cache-Control', 'private, no-store')
       .header('X-Content-Type-Options', 'nosniff')

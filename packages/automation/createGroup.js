@@ -10,6 +10,7 @@ const { checkPreflight } = require("./lib/preflight");
 const { navigateWithLogin } = require("./lib/login");
 const { requireMapping, resolveFileType, updateStage } = require("./lib/file-manifest");
 const { TASK_OUTCOME } = require("@ruyi/shared/runtime/task-outcome");
+const taskStore = require('@ruyi/shared/runtime/task-file-store');
 
 const groupUrls = {
   idfa: urls.idfaUpload,
@@ -226,8 +227,10 @@ function displayedNameForLog(requestedName, nameWithoutExtension) {
 async function main() {
   checkPreflight({ taskFiles: ["createGroupToDoList.json", "creategrouptodolist.json", "analyseToDoList.json"] });
   const uploadRoot = getUploadRoot();
-  const { fileName, todoPath, analysePath, analysed } = readNextFileName(uploadRoot);
-  const groupType = getGroupType(fileName, uploadRoot);
+  const dbFile = taskStore.enabled() ? (await taskStore.pending('create'))[0] : null;
+  if (taskStore.enabled() && !dbFile) throw new Error('没有待处理文件');
+  const { fileName, todoPath, analysePath, analysed } = dbFile ? { fileName: dbFile.platform_name } : readNextFileName(uploadRoot);
+  const groupType = await getGroupType(fileName, uploadRoot);
   if (!groupType) {
     console.error(`文件名中不含 idfa、oaid 或 pn，无法确定创建地址：${fileName}`);
     process.exitCode = 1;
@@ -251,10 +254,11 @@ async function main() {
     });
     await selectAudienceFile(page, fileName);
     await fillGroupInfo(page, fileName);
+    if (dbFile) await taskStore.beginOperation(uploadRoot, fileName, 'create');
     await submitGroup(page);
-    recordAnalysedFile(analysePath, fileName, analysed);
-    updateStage(uploadRoot, fileName, "created");
-    removeFromCreateTodoList(todoPath, fileName);
+    if (!dbFile) recordAnalysedFile(analysePath, fileName, analysed);
+    await updateStage(uploadRoot, fileName, "created");
+    if (!dbFile) removeFromCreateTodoList(todoPath, fileName);
     console.log(`已根据 ${fileName} 跳转到 ${groupType.toUpperCase()} 创建地址：${url}`);
   } finally {
     await closeBrowserContext(context);
@@ -266,6 +270,6 @@ if (typeof module !== "undefined" && require.main === module) main().catch((erro
   console.error(`创建地址跳转失败：${error.message}`);
   process.exitCode = /列表中找不到文件名称|搜索文件超时/.test(error.message)
     ? TASK_OUTCOME.NOT_READY : TASK_OUTCOME.FAILURE;
-});
+}).finally(() => taskStore.close());
 
 if (typeof module !== "undefined") module.exports = { main, readNextFileName, recordAnalysedFile, removeFromCreateTodoList, submitGroup };

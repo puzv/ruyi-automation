@@ -42,13 +42,18 @@ async function main() {
       ['GET', '/api/admin/users'], ['GET', '/api/api-tokens'], ['POST', '/api/api-tokens'],
       ['POST', '/api/api-tokens/:id/revoke'], ['POST', '/api/auth/change-password'],
       ['POST', '/api/platform-login'], ['GET', '/api/new-business-route'],
+      ['GET', '/api/admin/jobs/:id/log'],
+      ['GET', '/api/admin/tasks'], ['POST', '/api/admin/tasks/:id/continue'],
     ]) {
       const { reply } = await call(method, route, `Bearer ${secret}`);
       assert.equal(reply.statusCode, 403);
       assert.equal(reply.body.code, 'TOKEN_FORBIDDEN');
     }
     assert.equal((await call('GET', '/api/admin/users', `Bearer ${secret}`, '/api/%61dmin/users')).reply.body.code, 'TOKEN_FORBIDDEN');
-    for (const [method, route] of [['GET', '/api/auth/me'], ['GET', '/api/jobs/:id/results.zip'], ['POST', '/api/run/:task'], ['GET', '/api/auto-advance/phases']]) {
+    for (const [method, route] of [['GET', '/api/auth/me'], ['GET', '/api/jobs/:id/results.zip'], ['POST', '/api/run/:task'], ['GET', '/api/auto-advance/phases'],
+      ['POST', '/api/tasks'], ['GET', '/api/tasks'], ['GET', '/api/tasks/:id'], ['GET', '/api/tasks/:id/files'],
+      ['POST', '/api/tasks/:id/stop'], ['POST', '/api/tasks/:id/continue'], ['POST', '/api/tasks/:id/resume'],
+      ['PATCH', '/api/tasks/:id/name'], ['DELETE', '/api/tasks/:id'], ['DELETE', '/api/tasks/:id/files/:fileId']]) {
       assert.equal((await call(method, route, `Bearer ${secret}`)).reply.statusCode, 200);
     }
     user.must_change_password = 1;
@@ -57,6 +62,10 @@ async function main() {
     const session = await call('GET', '/api/status');
     assert.equal(session.request.authMethod, 'session');
     assert.equal(session.request.sessionTokenHash, 'session-hash');
+    assert.equal((await call('GET', '/api/admin/jobs/:id/log')).reply.statusCode, 200);
+    user.role = 'user';
+    assert.equal((await call('GET', '/api/admin/jobs/:id/log')).reply.statusCode, 403);
+    user.role = 'admin';
     const entry = auditFromRequest(authenticated.request, { detail: { task: 'upload' } });
     assert.deepEqual(sanitizeDetail(entry.detail), { task: 'upload', via: 'api_token', credentialId: 12 });
     assert.deepEqual(auditFromRequest(authenticated.request, {}).detail, { via: 'api_token', credentialId: 12 });

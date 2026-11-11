@@ -42,7 +42,7 @@ function mount(relative, labels, names, api, props = {}) {
       clearTimeout(id) { timers.delete(id); },
       confirm() { confirms++; return confirmResult; },
     }, apiFetch,
-    async observeResultJob() { return ''; }, async downloadJobResults() { return '已发起 ZIP 下载'; }, resetResultDownloads() {},
+    async observeResultJob() { return ''; }, async downloadJobResults(job) { calls.push({ url: `/api/jobs/${job.id}/results`, method: 'DOWNLOAD' }); return '已发起 ZIP 下载'; }, resetResultDownloads() {},
     async requestJson(url, options) {
       const response = await apiFetch(url, options);
       const data = await response.json();
@@ -67,412 +67,188 @@ function mount(relative, labels, names, api, props = {}) {
     },
   };
 }
-// 统一上传入口：文件与文件夹两种选择方式共用导入流程，只有导入出有效文件才提交上传任务。
-async function testUnifiedUpload(labels) {
-  const uploadNames = ['handleUploadSelection', 'toggleUploadPicker', 'closeUploadPicker', 'uploadPickerOpen', 'importing', 'notice', 'submitting', 'runTask'];
-  const uploadCalls = (page, url) => page.calls.filter((call) => call.url === url && call.method === 'POST');
-  const runCalls = (page) => uploadCalls(page, '/api/run/upload');
-  const importCalls = (page) => uploadCalls(page, '/api/import-folder');
-  const makeFile = (name, relative = '') => {
-    const file = new File(['数据'], name, { type: 'text/plain' });
-    if (relative) Object.defineProperty(file, 'webkitRelativePath', { value: relative });
+const fallback = { ok: true, status: 'valid' };
+
+async function testTaskPanel(labels) {
+  const names = ['items', 'page', 'pages', 'files', 'jobs', 'filters', 'form', 'showCreate', 'platformStatus', 'error', 'notice', 'busy', 'expanded', 'load', 'toggleTask', 'openCreate', 'chooseFiles', 'chooseFolder', 'selectedSummary', 'createTask', 'removeFile', 'removeTask', 'resume', 'continueTask', 'download', 'stepStatus', 'statusLabel', 'presentJob'];
+  let status = 'queued', platform = 'valid', fail = false, createError = false;
+  const bodies = [];
+  const task = () => ({ id: 'task-1', name: '测试任务', status, currentStep: 'upload', version: 3 });
+  const file = { id: 'file-1', originalName: '测试oaid.txt', excludedAt: null, sizeBytes: 5 };
+  const records = [{ id: 'job-1', task: 'upload', status: 'running' }];
+  const handler = async (url, method, options) => {
+    if (fail) throw new Error('列表暂不可用');
+    if (url === '/api/platform-state') return { ok: true, status: platform };
+    if (method === 'DELETE') { assert.equal(options.body.version, 3); return { ok: true, status: status === 'running' ? 'cancelling' : 'deleted' }; }
+    if (method === 'POST') {
+      if (url.endsWith('/stop')) { assert.equal(options.body.version, 3); return { ok: true, status: 'cancelling' }; }
+      if (url.endsWith('/continue')) assert.equal(options.body.version, 3);
+      if (url === '/api/tasks') {
+        bodies.push(options.body);
+        if (createError) return { httpStatus: 409, data: { ok: false, message: '任务创建失败，请重试' } };
+      }
+      return { ok: true };
+    }
+    if (url.endsWith('/files')) return { ok: true, items: [file] };
+    if (url.endsWith('/task-1')) return { ok: true, item: task(), jobs: records };
+    return { ok: true, items: [task()], total: 41, page: Number(new URL(url, 'http://local').searchParams.get('page')) };
+  };
+  const page = mount('components/JobsTable.vue', { ...labels, FormData, File }, names, handler);
+  await page.start();
+  assert.equal(page.calls[0].url, '/api/tasks?page=1&pageSize=20');
+  assert.equal(page.view.pages.value, 3);
+  assert.equal(page.view.jobs['task-1'].length, 1);
+  assert.equal(page.view.presentJob({ status: 'waiting_platform', message: '新API等待' }).message, '新API等待');
+  assert.equal(page.view.presentJob({ status: 'failed', errorMessage: '任务未就绪，稍后可重试：平台计算中' }).status, 'waiting_platform');
+  assert.equal(page.view.presentJob({ status: 'failed', errorMessage: '任务未就绪，稍后可重试', outcome: 'failure' }).status, 'failed');
+  assert.equal(page.view.presentJob({ status: 'failed', errorMessage: '任务未就绪，稍后可重试', exitCode: 2, exitSignal: null }).status, 'failed', '显式新协议失败不以旧前缀改写');
+  assert.equal(page.view.presentJob({ status: 'failed', errorMessage: '普通任务未就绪错误' }).status, 'failed');
+  records.push({ id: 'waiting-record', task: 'analyse', status: 'waiting_platform', outcome: 'not_ready', errorMessage: null });
+  await page.view.load(1);
+  assert.equal(page.view.jobs['task-1'][1].status, 'waiting_platform');
+  assert.equal(page.view.statusLabel('waiting_platform'), '等待平台处理');
+  assert.equal(page.view.stepStatus({ ...task(), status: 'running', currentStep: 'analyse' }, 'analyse'), 'running');
+  records.pop();
+  await page.view.load(1);
+  assert.equal(page.view.files['task-1'], undefined, '文件清单按需加载');
+  await page.view.toggleTask(task());
+  assert.equal(page.view.expanded['task-1'], true);
+  assert.equal(page.view.files['task-1'][0].originalName, file.originalName);
+  assert.equal(page.view.statusLabel('pending'), '未开始');
+  assert.equal(page.view.stepStatus(task(), 'upload'), 'running');
+  assert.equal(page.view.stepStatus(task(), 'analyse'), 'pending');
+  records[0].status = 'failed'; status = 'running';
+  await page.view.load(1);
+  assert.equal(page.view.stepStatus(task(), 'upload'), 'running', '平台未就绪的非零退出不应把正在推进的步骤显示为失败');
+  records[0].status = 'running'; status = 'queued';
+  await page.view.load(2); assert.equal(page.view.page.value, 2);
+  page.confirm(false); await page.view.removeFile(task(), file);
+  assert.equal(page.calls.some((call) => call.method === 'DELETE'), false);
+  page.confirm(true); await page.view.removeFile(task(), file);
+  assert.ok(page.calls.some((call) => call.url === '/api/tasks/task-1/files/file-1' && call.method === 'DELETE'));
+  status = 'running'; await page.view.removeTask(task());
+  assert.ok(page.calls.some((call) => call.url === '/api/tasks/task-1/stop' && call.method === 'POST'), '停止使用独立接口');
+  assert.equal(page.calls.some((call) => call.url === '/api/tasks/task-1' && call.method === 'DELETE'), false, '运行中停止不发送删除请求');
+  assert.equal(page.view.notice.value, '停止请求已提交，完成后可继续任务');
+  const before = page.calls.length;
+  await page.view.removeFile(task(), file);
+  assert.equal(page.calls.length, before, '运行中任务禁止删除文件');
+  platform = 'none'; await page.view.openCreate();
+  page.view.chooseFiles({ target: { files: [new File(['x'], '测试oaid.txt')] } });
+  await page.view.createTask();
+  assert.ok(page.view.error.value.includes('平台登录'));
+  assert.equal(page.calls.some((call) => call.url === '/api/tasks' && call.method === 'POST'), false);
+  const folderFile = (name, relative) => {
+    const file = new File(['x'], name);
+    Object.defineProperty(file, 'webkitRelativePath', { value: relative });
     return file;
   };
-  const eventFor = (files) => ({ target: { files, value: 'fake-selection' } });
-  const mountUpload = (importResult, { runError = null } = {}) => {
-    const bodies = [];
-    const page = mount('views/WorkbenchView.vue', { ...labels, FormData, File }, uploadNames, async (url, method, options = {}) => {
-      if (url === '/api/import-folder') {
-        bodies.push(options.body);
-        if (importResult instanceof Error) throw importResult;
-        return importResult;
-      }
-      if (url === '/api/run/upload') {
-        if (runError) return { httpStatus: 409, data: { ok: false, message: runError } };
-        return { ok: true, id: 'upload-1', status: 'queued', position: 0 };
-      }
-      if (url === '/api/jobs/upload-1') return { ok: true, job: { id: 'upload-1', task: 'upload', status: 'queued', position: 0, output: '' } };
-      return fallback;
-    }, { currentUser: { id: 7 } });
-    return { page, bodies };
-  };
+  const eventFor = (files) => ({ target: { files, value: 'folder-selection' } });
+  const folderSelection = eventFor([
+    folderFile('样本oaid.txt', '批次/子目录/样本oaid.txt'),
+    folderFile('.隐藏pn.txt', '批次/.隐藏pn.txt'),
+    folderFile('样本pn.csv', '批次/.缓存/样本pn.csv'),
+    folderFile('说明.md', '批次/说明.md'),
+  ]);
+  page.view.chooseFolder(folderSelection);
+  assert.equal(page.view.form.files.length, 1); assert.equal(page.view.selectedSummary.value.skipped, 3);
+  assert.equal(folderSelection.target.value, '', '重置输入便于再次选择同一文件夹');
+  page.view.chooseFolder(eventFor([]));
+  assert.equal(page.view.form.files.length, 1, '取消选择保留原清单');
+  page.view.chooseFolder(eventFor([folderFile('a_oaid.txt', '批次/a/a_oaid.txt'), folderFile('a_oaid.txt', '批次/b/a_oaid.txt')]));
+  assert.ok(page.view.selectedSummary.value.error.includes('重名'));
+  const countBeforeInvalid = page.calls.length;
+  await page.view.createTask(); assert.equal(page.calls.length, countBeforeInvalid, '文件夹重名在提交前阻断');
+  page.view.chooseFolder(eventFor([folderFile('é_oaid.txt', '批次/a/é_oaid.txt'), folderFile('é_oaid.txt', '批次/b/é_oaid.txt')]));
+  assert.ok(page.view.selectedSummary.value.error.includes('重名'), 'NFC等价文件名也阻断');
+  page.view.chooseFolder(eventFor([folderFile('oaid.txt', '批次/oaid.txt'), folderFile('oaid.csv', '批次/oaid.csv')]));
+  assert.ok(page.view.selectedSummary.value.error.includes('主名称'), '不同扩展名的结果重名也阻断');
+  page.view.chooseFolder(eventFor([folderFile('说明.md', '批次/说明.md')]));
+  assert.ok(page.view.selectedSummary.value.error.includes('没有可导入'));
+  const zeroCalls = page.calls.length; await page.view.createTask(); assert.equal(page.calls.length, zeroCalls);
+  page.view.chooseFolder(eventFor(Array.from({ length: 1001 }, (_, i) => ({ name: `oaid_${i}.txt`, size: 1 }))));
+  assert.ok(page.view.selectedSummary.value.error.includes('1000'));
+  page.view.chooseFolder(eventFor([{ name: 'oaid_large.txt', size: 1024 * 1024 * 1024 + 1 }]));
+  assert.ok(page.view.selectedSummary.value.error.includes('1GB'));
+  page.view.chooseFolder(eventFor([folderFile('样本oaid.txt', '批次/子目录/样本oaid.txt')]));
+  platform = 'valid'; createError = true; page.view.form.name = ' 自定义任务 ';
+  await page.view.createTask();
+  assert.ok(page.view.error.value.includes('创建失败')); assert.equal(page.view.form.files.length, 1, '失败保留所选文件便于重试');
+  createError = false; await page.view.createTask();
+  assert.equal(bodies.at(-1).get('name'), '自定义任务');
+  assert.equal(bodies.at(-1).getAll('files')[0].name, '样本oaid.txt', '任务上传仅传原始basename，不把目录当作文件名');
+  assert.ok(page.calls.some((call) => call.url === '/api/tasks' && call.method === 'POST'));
+  assert.equal(page.view.form.files.length, 0); assert.equal(page.view.showCreate.value, false);
+  status = 'waiting_login'; await page.view.resume(task());
+  assert.ok(page.calls.some((call) => call.url === '/api/tasks/task-1/resume'));
+  status = 'interrupted'; platform = 'none'; await page.view.continueTask(task());
+  assert.ok(page.view.error.value.includes('平台登录'));
+  assert.equal(page.calls.some((call) => call.url.endsWith('/continue')), false);
+  platform = 'valid'; page.confirm(false); await page.view.continueTask(task());
+  assert.equal(page.calls.some((call) => call.url.endsWith('/continue')), false);
+  page.confirm(true); await page.view.continueTask(task());
+  assert.ok(page.calls.some((call) => call.url === '/api/tasks/task-1/continue' && call.method === 'POST'));
+  const continued = page.calls.length;
+  status = 'running'; await page.view.continueTask(task());
+  assert.equal(page.calls.length, continued, '非中断任务不能继续');
+  status = 'waiting_login';
+  const deletionCount = page.calls.filter((call) => call.method === 'DELETE').length;
+  await page.view.removeFile({ ...task(), startedAt: '2026-11-10T00:00:00Z' }, file);
+  assert.equal(page.calls.filter((call) => call.method === 'DELETE').length, deletionCount + 1, '等待登录任务即使已启动也允许删除后续文件');
+  status = 'succeeded'; records.push({ id: 'download-1', task: 'download', status: 'succeeded' });
+  await page.view.load(1); await page.view.download(task());
+  assert.ok(page.calls.some((call) => call.url === '/api/jobs/download-1/results' && call.method === 'DOWNLOAD'));
+  fail = true; await page.tick(5000);
+  assert.equal(page.view.error.value, '列表暂不可用'); assert.equal(page.timers.size, 1, '失败后仍可自动刷新');
+  page.unmount(); assert.equal(page.timers.size, 0);
 
-  // 文件选择：多文件导入成功后只提交一次上传任务，且表单内只包含可用文件。
-  {
-    const { page, bodies } = await mountUpload({ ok: true, count: 2, skipped: 1 });
-    await page.start();
-    const { view } = page;
-    view.toggleUploadPicker();
-    assert.equal(view.uploadPickerOpen.value, true);
-    await view.handleUploadSelection(eventFor([makeFile('idfa-a.txt'), makeFile('pn-b.csv'), makeFile('readme.md')]));
-    assert.equal(importCalls(page).length, 1);
-    const names = bodies[0].getAll('files').map((file) => file.name);
-    assert.deepEqual(names, ['idfa-a.txt', 'pn-b.csv']);
-    assert.equal(runCalls(page).length, 1);
-    assert.equal(view.uploadPickerOpen.value, false);
-    assert.equal(view.notice.value, '上传文件即将开始');
-    page.unmount();
-  }
-
-  // 文件夹选择复用同一流程，保留 webkitRelativePath 作为上传表单中的路径。
-  {
-    const { page, bodies } = await mountUpload({ ok: true, count: 1, skipped: 0 });
-    await page.start();
-    await page.view.handleUploadSelection(eventFor([makeFile('oaid.txt', '批次一/oaid.txt')]));
-    assert.equal(bodies[0].getAll('files')[0].name, '批次一/oaid.txt');
-    assert.equal(runCalls(page).length, 1);
-    page.unmount();
-  }
-
-  // 取消（空选择）、无有效文件、导入失败、导入数量为零、网络异常：均不提交上传任务。
-  const rejected = [
-    ['取消选择', { ok: true, count: 0 }, [], '未选择文件'],
-    ['无有效文件', { ok: true, count: 0 }, [makeFile('readme.md'), makeFile('notes.txt')], '未找到符合条件的文件'],
-    ['导入失败', { ok: false, message: '文件已存在，不会覆盖：idfa.txt' }, [makeFile('idfa.txt')], '导入失败：文件已存在'],
-    ['导入数量为零', { ok: true, count: 0, skipped: 1 }, [makeFile('idfa.txt')], '没有新增文件'],
-    ['网络异常', new Error('无法连接服务'), [makeFile('idfa.txt')], '导入失败：无法连接服务'],
-  ];
-  for (const [name, importResult, files, message] of rejected) {
-    const { page } = await mountUpload(importResult);
-    await page.start();
-    await page.view.handleUploadSelection(eventFor(files));
-    assert.equal(runCalls(page).length, 0, `${name}不应提交上传任务`);
-    assert.match(page.view.notice.value, new RegExp(message), name);
-    assert.equal(page.view.importing.value, false, `${name}结束后应恢复按钮`);
-    assert.equal(page.view.uploadPickerOpen.value, false, `${name}结束后应收起选择面板`);
-    page.unmount();
-  }
-
-  // 导入成功但上传任务被拒绝时，导入结果保留并展示任务错误；不重复导入。
-  {
-    const { page } = await mountUpload({ ok: true, count: 1, skipped: 0 }, { runError: '当前用户有任务正在运行' });
-    await page.start();
-    await page.view.handleUploadSelection(eventFor([makeFile('idfa.txt')]));
-    assert.equal(importCalls(page).length, 1);
-    assert.equal(runCalls(page).length, 1);
-    assert.equal(page.view.notice.value, '当前用户有任务正在运行');
-    page.unmount();
-  }
-
-  // 选择面板：导入中不能切换，避免同一批文件被重复提交。
-  {
-    const { page } = await mountUpload({ ok: true, count: 1, skipped: 0 });
-    await page.start();
-    page.view.importing.value = true;
-    page.view.toggleUploadPicker();
-    assert.equal(page.view.uploadPickerOpen.value, false);
-    page.view.importing.value = false;
-    page.view.toggleUploadPicker();
-    page.view.closeUploadPicker();
-    assert.equal(page.view.uploadPickerOpen.value, false);
-    page.unmount();
-  }
-}
-
-const workbenchNames = ['runTask', 'restoreActiveJob', 'pollJob', 'cancelJob', 'currentJob', 'jobs', 'jobId', 'notice', 'jobLog', 'running', 'submitting', 'platformLoginRequired'];
-const tableNames = ['load', 'cancelJob', 'items', 'page', 'pages', 'total', 'filters', 'loading', 'error', 'now'];
-const fallback = { ok: true, workspaceStatus: '等待操作', status: 'valid', headless: true };
-
-async function testAutoProgress(labels) {
-  const page = mount('views/WorkbenchView.vue', labels,
-    ['autoAdvance', 'autoProgress', 'statusCounts'], () => fallback);
-  const { autoAdvance, autoProgress, statusCounts } = page.view;
-  statusCounts.value = { createCount: 1, analyseCount: 2, doneCount: 3 };
-  const phases = {
-    idle: [0, 'idle', 0], waitingFiles: [1, 'waiting', 0], readyCreate: [1, 'submitting', 1],
-    waitingAudience: [2, 'waiting', 1], readyAnalyse: [2, 'submitting', 2],
-    waitingResults: [3, 'waiting', 2], resultsReady: [3, 'done', 3],
-    stalled: [1, 'blocked', 0], error: [1, 'blocked', 0], loginRequired: [1, 'blocked', 0], paused: [1, 'paused', 0],
-  };
-  for (const [phase, [step, mode, completedSteps]] of Object.entries(phases)) {
-    autoAdvance.value = { phase, pending: {} };
-    assert.equal(autoProgress.value.step, step, phase);
-    assert.equal(autoProgress.value.mode, mode, phase);
-    assert.equal(autoProgress.value.completedSteps, completedSteps, phase);
-    assert.equal(autoProgress.value.pendingText, '', phase);
-  }
-  for (const phase of ['stalled', 'error', 'loginRequired', 'paused']) {
-    autoAdvance.value = { phase, pending: {} };
-    for (const [counts, step] of [
-      [{ createCount: 0, analyseCount: 2, doneCount: 3 }, 2],
-      [{ createCount: 0, analyseCount: 0, doneCount: 3 }, 3],
-      [{ createCount: 0, analyseCount: 0, doneCount: 0 }, 0],
-    ]) {
-      statusCounts.value = counts;
-      assert.equal(autoProgress.value.step, step, `${phase} 工作区推导`);
-    }
-  }
-  for (const [phase, key, text] of [
-    ['waitingFiles', 'files', '剩余 3 个文件'],
-    ['waitingAudience', 'audiences', '剩余 3 个人群包'],
-    ['waitingResults', 'results', '剩余 3 个洞悉结果'],
-  ]) {
-    autoAdvance.value = { phase, pending: { [key]: 3 } };
-    assert.equal(autoProgress.value.pendingText, text);
-    autoAdvance.value = { phase, pending: {} };
-    assert.equal(autoProgress.value.pendingText, '');
-    autoAdvance.value = { phase };
-    assert.equal(autoProgress.value.pendingText, '');
-    autoAdvance.value = { phase, pending: { [key]: 0 } };
-    assert.equal(autoProgress.value.pendingText, '');
-  }
-  autoAdvance.value = { phase: 'readyCreate', pending: { files: 0 } };
-  assert.equal(autoProgress.value.pendingText, '');
-  autoAdvance.value = { phase: 'resultsReady', pending: { results: 0 } };
-  assert.equal(autoProgress.value.pendingText, '');
-  assert.equal(page.timers.size, 0, '进度动画不能新增 JS 计时器');
-  assert.match(fs.readFileSync(path.resolve(__dirname, '../apps/web/src/style.css'), 'utf8'), /prefers-reduced-motion/);
-  page.unmount();
-}
-
-async function testWorkbench(labels) {
-  let job = { id: 'restore-1', task: 'upload', status: 'queued', position: 4, output: '排队日志' };
-  let pollError = false;
-  const page = mount('views/WorkbenchView.vue', labels, workbenchNames, async (url, method) => {
-    if (url === '/api/jobs/active') return { ok: true, job };
-    if (method === 'POST') {
-      job = { ...job, status: 'cancelled' }; return { ok: true, result: 'cancelled' };
-    }
-    if (url === '/api/jobs/restore-1') {
-      if (pollError) throw new Error('网络暂不可用');
-      return { ok: true, job };
-    }
-    return fallback;
-  });
-  await page.start();
-  const view = page.view;
-  assert.equal(view.jobId.value, 'restore-1');
-  assert.equal(view.notice.value, '上传文件排队中，前面还有 3 个任务');
-  assert.equal(view.jobLog.value, '排队日志');
-  assert.equal(page.jobTimers()[0][1].delay, 1000);
-  pollError = true;
-  await page.tick(1000);
-  assert.match(view.notice.value, /网络暂不可用/);
-  assert.equal(page.jobTimers().length, 1);
-  pollError = false;
-  job.position = 0;
-  await page.tick(1000);
-  assert.equal(view.notice.value, '上传文件即将开始');
-  page.confirm(false);
-  await view.cancelJob();
-  assert.equal(page.calls.some((call) => call.method === 'POST'), false);
-  page.confirm(true);
-  await view.cancelJob();
-  assert.equal(page.confirms(), 2);
-  assert.equal(view.notice.value, '上传文件已取消');
-  assert.equal(page.jobTimers().length, 0);
-  assert.equal(page.calls.filter((call) => call.url.endsWith('/cancel')).length, 1);
-  page.unmount();
-
-  // 每个按钮只在提交请求中禁用；其他任务及同类后续任务都可排队。
-  const gate = deferred();
-  let serial = 0, submitError = '';
-  const queuePage = mount('views/WorkbenchView.vue', labels, workbenchNames, async (url, method) => {
-    if (url.startsWith('/api/run/')) {
-      if (url.endsWith('/upload')) await gate.promise;
-      if (submitError) return { httpStatus: 409, data: { ok: false, code: 'user_limit', message: submitError } };
-      return { ok: true, id: `job-${++serial}`, status: 'queued', position: 2 };
-    }
-    if (url === '/api/jobs/active') return { ok: true, job: null };
-    if (url.startsWith('/api/jobs/') && method === 'GET') return { ok: true, job: { id: url.split('/').pop(), task: 'create', status: 'queued', position: 2, output: '日志' } };
-    return fallback;
-  });
-  const q = queuePage.view;
-  const first = q.runTask('上传文件');
-  await q.runTask('上传文件');
-  assert.equal(queuePage.calls.filter((call) => call.url === '/api/run/upload').length, 1);
-  assert.equal(q.submitting.value.upload, true);
-  await q.runTask('创建人群');
-  assert.equal(q.jobs.value.length, 1);
-  gate.resolve(); await first; await flush();
-  assert.equal(q.submitting.value.upload, false);
-  assert.equal(q.jobs.value.length, 2);
-  await q.runTask('创建人群'); await flush();
-  assert.equal(q.jobs.value.length, 3);
-  assert.equal(queuePage.timers.size, 3);
-  submitError = '排队任务过多，请等待已有任务完成';
-  await q.runTask('人群洞悉');
-  assert.equal(q.notice.value, submitError);
-  assert.equal(q.submitting.value.analyse, false);
-  await queuePage.tick(1000);
-  assert.equal(q.notice.value, submitError, '后台轮询不能覆盖提交失败的服务端提示');
-  queuePage.unmount();
-  assert.equal(queuePage.timers.size, 0);
-
-  // 取消前发出的旧轮询不得覆盖“正在停止”，离开页面后也不能重建计时器。
-  const stale = deferred();
-  let held = false;
-  let runningJob = { id: 'running-1', task: 'download', status: 'running', output: '运行日志' };
-  const race = mount('views/WorkbenchView.vue', labels, workbenchNames, async (url, method) => {
-    if (url === '/api/jobs/active') return { ok: true, job: runningJob };
-    if (method === 'POST') { runningJob = { ...runningJob, cancelRequested: true }; return { ok: true, result: 'cancelling' }; }
-    if (url === '/api/jobs/running-1') {
-      if (held) { held = false; return stale.promise; }
-      return { ok: true, job: runningJob };
-    }
-    return fallback;
-  });
-  await race.start(); held = true;
-  const oldPoll = race.tick(1000); await flush();
-  await race.view.cancelJob();
-  assert.equal(race.view.notice.value, '正在停止任务…');
-  stale.resolve({ ok: true, job: { ...runningJob, cancelRequested: false } });
-  await oldPoll;
-  assert.equal(race.view.currentJob.value.cancelRequested, true);
-  runningJob.status = 'cancelled';
-  await race.tick(1000);
-  assert.equal(race.view.notice.value, '下载结果已取消');
-  assert.equal(race.jobTimers().length, 0);
-  race.unmount();
-
-  const leaving = deferred();
-  const late = mount('views/WorkbenchView.vue', labels, workbenchNames, async (url) => url === '/api/jobs/active' ? leaving.promise : fallback);
-  const restoring = late.view.restoreActiveJob();
-  late.unmount(); leaving.resolve({ ok: true, job: runningJob }); await restoring;
-  assert.equal(late.view.jobId.value, '');
-  assert.equal(late.timers.size, 0);
-
-  for (const task of ['upload', 'create', 'analyse', 'download']) {
-    const success = mount('views/WorkbenchView.vue', labels, workbenchNames, async (url) => {
-      if (url.startsWith('/api/run/')) return { ok: true, id: task, status: 'queued' };
-      if (url === `/api/jobs/${task}`) return { ok: true, job: { id: task, task, status: 'succeeded', output: '已结束' } };
-      return fallback;
-    });
-    await success.view.runTask(labels.taskLabels[task]); await flush();
-    assert.equal(success.view.running.value, '');
-    assert.equal(success.view.currentJob.value.status, 'succeeded');
-    assert.equal(success.timers.size, 0);
-    assert.equal(success.calls.filter((call) => call.url === '/api/status').length, task === 'download' ? 1 : 2);
-    success.unmount();
-  }
-
-  const background = mount('views/WorkbenchView.vue', labels, workbenchNames, async (url) => {
-    if (url === '/api/jobs/completed') return { ok: true, job: { id: 'completed', task: 'upload', status: 'succeeded' } };
-    return fallback;
-  });
-  background.view.jobs.value = [{ id: 'completed', task: 'upload', status: 'running' }, { id: 'selected', task: 'download', status: 'queued' }];
-  background.view.jobId.value = 'selected';
-  background.view.notice.value = '下载结果即将开始';
-  await background.view.pollJob('completed');
-  assert.equal(background.calls.filter((call) => call.url === '/api/status').length, 2, '后台完成的任务也需要检测当前状态');
-  assert.equal(background.view.notice.value, '下载结果即将开始', '后台检测不能覆盖当前任务的提示');
-  background.unmount();
-
-  // 自动推进开启时由服务端探测平台。前端若仍然自己请求 /api/platform-status，
-  // 会和引擎抢同一个用户占位，拿到 409 后被误显示成“平台状态读取失败”。
-  const auto = mount('views/WorkbenchView.vue', labels, workbenchNames, async (url) => {
-    if (url === '/api/auto-advance') {
-      return { ok: true, enabled: true, phase: 'waitingFiles', message: '正在等待平台处理上传文件', intervalMs: 300000 };
-    }
-    if (url === '/api/auto-advance/check') return { ok: true, enabled: true, phase: 'waitingFiles', message: '正在等待平台处理上传文件' };
-    if (url === '/api/jobs/auto-1') return { ok: true, job: { id: 'auto-1', task: 'upload', status: 'succeeded' } };
-    // 有创建待办时检测才会真的去读平台；这里让它一定会被调用到。
-    if (url === '/api/status') {
-      const refreshed = auto.calls.filter((call) => call.url === '/api/status').length > 1
-      return { ok: true, workspaceStatus: refreshed ? '等待洞悉' : '等待创建人群包', createCount: refreshed ? 0 : 1, createNames: refreshed ? [] : ['pzw_oaid_x_1'], analyseCount: refreshed ? 1 : 0, doneCount: 0 }
-    }
-    if (url === '/api/platform-status') return { ok: true, pnPending: 0, idfaPending: 0, oaidPending: 0, insightPending: 0, resultPending: 0, errors: [] };
-    return fallback;
-  });
-  auto.view.jobs.value = [{ id: 'auto-1', task: 'upload', status: 'running' }];
-  auto.view.jobId.value = 'auto-1';
-  await auto.view.pollJob('auto-1');
-  assert.equal(auto.calls.filter((call) => call.url === '/api/platform-status').length, 0,
-    '自动推进开启时前端不得自行探测平台');
-  assert.equal(auto.calls.filter((call) => call.url === '/api/auto-advance/check').length, 1,
-    '应当请求服务端立即检查，而不是等下一轮定时');
-  assert.equal(auto.calls.filter((call) => call.url === '/api/status').length, 2,
-    '自动推进检查完成后应立即刷新工作区状态');
-  assert.match(auto.view.notice.value, /自动推进正在接管/);
-  auto.unmount();
-
-  // 关闭自动推进后回到原来的行为，手动检测仍要工作。
-  const manual = mount('views/WorkbenchView.vue', labels, workbenchNames, async (url) => {
-    if (url === '/api/auto-advance') return { ok: true, enabled: false, phase: 'paused', message: '自动推进已关闭', intervalMs: 300000 };
-    if (url === '/api/jobs/manual-1') return { ok: true, job: { id: 'manual-1', task: 'upload', status: 'succeeded' } };
-    if (url === '/api/status') return { ok: true, workspaceStatus: '等待创建人群包', createCount: 1, createNames: ['pzw_oaid_x_1'], analyseCount: 0, doneCount: 0 };
-    if (url === '/api/platform-status') return { ok: true, pnPending: 0, idfaPending: 0, oaidPending: 0, insightPending: 0, resultPending: 0, errors: [] };
-    return fallback;
-  });
-  manual.view.jobs.value = [{ id: 'manual-1', task: 'upload', status: 'running' }];
-  manual.view.jobId.value = 'manual-1';
-  await manual.view.pollJob('manual-1');
-  assert.equal(manual.calls.filter((call) => call.url === '/api/platform-status').length, 1,
-    '关闭自动推进后仍需自动检测平台');
-  assert.equal(manual.calls.filter((call) => call.url === '/api/auto-advance/check').length, 0);
-  manual.unmount();
-}
-
-async function testTables(labels) {
-  let items = [{ id: 'mine', task: 'upload', status: 'running', startedAt: '2026-10-20T00:00:00Z' }];
-  let fail = false;
-  const page = mount('components/JobsTable.vue', labels, tableNames, async (url, method) => {
-    if (method === 'POST') { items = [{ ...items[0], status: 'cancelled' }]; return { ok: true, result: 'cancelled' }; }
-    if (fail) throw new Error('列表暂不可用');
-    return { ok: true, items, page: Number(new URL(url, 'http://local').searchParams.get('page')), total: 41 };
-  });
-  await page.start();
-  assert.equal(page.calls[0].url, '/api/jobs?page=1&pageSize=20');
-  assert.equal(page.view.pages.value, 3);
-  assert.equal(labels.jobDuration(page.view.items.value[0], page.view.now.value), '2 分 5 秒');
-  assert.equal([...page.timers.values()][0].delay, 3000);
-  await page.tick(3000);
-  assert.equal(labels.jobDuration(page.view.items.value[0], page.view.now.value), '2 分 8 秒');
-  await page.view.load(2);
-  assert.equal(page.view.page.value, 2);
-  fail = true; await page.tick(3000);
-  assert.equal(page.view.error.value, '列表暂不可用');
-  assert.equal(page.timers.size, 1);
-  fail = false;
-  page.confirm(false); await page.view.cancelJob(page.view.items.value[0]);
-  assert.equal(page.calls.some((call) => call.method === 'POST'), false);
-  page.confirm(true); await page.view.cancelJob(page.view.items.value[0]);
-  assert.equal(page.calls.filter((call) => call.method === 'POST').length, 1);
-  assert.equal(page.view.items.value[0].status, 'cancelled');
-  assert.equal(page.timers.size, 0);
-  page.unmount();
-
-  const admin = mount('components/JobsTable.vue', labels, tableNames, async (url) => ({
-    ok: true, items: [{ id: 'admin-1', task: 'create', username: '用户甲', status: 'queued' }],
-    page: Number(new URL(url, 'http://local').searchParams.get('page')), total: 41,
-  }), { admin: true });
-  await admin.start();
-  await admin.view.load(2);
-  admin.view.filters.username = '用户甲'; admin.view.filters.status = 'queued';
+  const admin = mount('components/JobsTable.vue', labels, names, handler, { admin: true });
+  fail = false; await admin.start();
+  admin.view.filters.username = '用户甲'; admin.view.filters.status = 'waiting_login';
   await admin.view.load(1, true);
-  assert.equal(admin.view.page.value, 1);
-  let query = new URL(admin.calls.at(-1).url, 'http://local');
-  assert.equal(query.pathname, '/api/admin/jobs');
-  assert.equal(query.searchParams.get('username'), '用户甲');
-  assert.equal(query.searchParams.get('status'), 'queued');
-  admin.view.filters.username = '尚未查询';
-  await admin.tick(3000);
-  query = new URL(admin.calls.at(-1).url, 'http://local');
-  assert.equal(query.searchParams.get('username'), '用户甲');
-  await admin.view.cancelJob(admin.view.items.value[0]);
-  assert.equal(admin.confirms(), 0);
-  assert.equal(admin.calls.some((call) => call.method === 'POST'), false);
+  const url = admin.calls.findLast((call) => call.url.includes('?')).url;
+  assert.ok(url.startsWith('/api/admin/tasks?')); assert.ok(url.includes('waiting_login'));
+  const count = admin.calls.length;
+  await admin.view.removeTask(task()); await admin.view.resume(task()); await admin.view.continueTask({ ...task(), status: 'interrupted' }); await admin.view.createTask(); await admin.view.download(task());
+  assert.equal(admin.calls.length, count, '管理员页面只读，不发起用户任务写操作');
   admin.unmount();
-  assert.equal(admin.timers.size, 0);
+
+  const auditRows = [1, 2].map((id) => ({ id, userId: 1, action: 'job.finish', result: 'success', detail: { taskId: 'task-1', task: 'analyse', status: 'waiting_login', outcome: 'login_required' } }));
+  const audit = mount('components/LogTable.vue', labels, ['groups', 'expanded', 'resultLabel', 'resultTone'], () => ({}), { items: auditRows });
+  assert.equal(audit.view.groups.value.length, 1);
+  assert.equal(audit.view.groups.value[0].records.length, 2);
+  assert.equal(audit.view.resultLabel(auditRows[0]), '等待登录');
+  assert.equal(audit.view.resultTone(auditRows[0]), 'job-status-queued');
+  audit.view.expanded[audit.view.groups.value[0].id] = true;
+  assert.equal(audit.view.expanded[1], true);
+  assert.equal(audit.view.resultLabel({ result: 'failure' }), '失败');
 
   const gate = deferred();
-  const late = mount('components/JobsTable.vue', labels, tableNames, () => gate.promise);
-  const loading = late.view.load(); late.unmount();
-  gate.resolve({ ok: true, items, total: 1, page: 1 }); await loading;
-  assert.equal(late.view.items.value.length, 0);
-  assert.equal(late.timers.size, 0);
+  const late = mount('components/JobsTable.vue', labels, names, () => gate.promise);
+  const pending = late.view.load(); late.unmount();
+  gate.resolve({ ok: true, items: [task()], total: 1, page: 1 }); await pending;
+  assert.equal(late.view.items.value.length, 0); assert.equal(late.timers.size, 0);
 }
+
+function labelsForShell() { return { formatTime: () => '时间' }; }
 
 async function main() {
+  await require('./frontend-wait-records.test')();
   await testLogDialog();
   const workbenchTemplate = readComponent('views/WorkbenchView.vue').descriptor.template.content;
+  assert.ok(workbenchTemplate.includes('class="login-status"'), '保留上方平台登录状态入口');
+  const navigation = workbenchTemplate.match(/<nav class="side-nav"[\s\S]*?<\/nav>/)[0];
+  assert.ok(!navigation.includes('href="#/platform-login"'), '导航中不再重复展示平台登录入口');
   assert.ok(!workbenchTemplate.includes('WORKSPACE SNAPSHOT'), '不再显示当前状态模块');
   assert.ok(!workbenchTemplate.includes('queue-panel'), '不再显示队列统计卡片');
-  assert.ok(workbenchTemplate.includes('class="auto-panel"'), '保留自动推进');
-  assert.ok(workbenchTemplate.includes('aria-label="任务反馈"'), '保留独立任务反馈');
-  assert.ok(workbenchTemplate.includes('{{ notice }}'), '操作提示仍可见');
-  assert.ok(workbenchTemplate.includes('取消任务') && workbenchTemplate.includes('class="job-log"'), '保留取消和日志');
-  const labels = await import('../apps/web/src/labels.js');
+  assert.ok(!navigation.includes('操作面板'), '操作面板入口下线');
+  const shell = mount('views/WorkbenchView.vue', labelsForShell(), ['refreshPlatformState', 'platformState'], () => ({ ok: true, status: 'valid' }));
+  await shell.start();
+  assert.equal(shell.calls.length, 1);
+  assert.equal(shell.calls[0].url, '/api/platform-state');
+  assert.equal(shell.timers.size, 0, '布局不启动旧工作流轮询');
+  shell.unmount();
+  const labels = { ...await import('../apps/web/src/labels.js'), ...await import('../apps/web/src/wait-records.js') };
   assert.deepEqual({ ...labels.taskLabels }, { upload: '上传文件', create: '创建人群', analyse: '人群洞悉', download: '下载结果' });
   assert.deepEqual({ ...labels.jobStatusLabels }, { queued: '排队中', running: '运行中', succeeded: '成功', failed: '失败', cancelled: '已取消', interrupted: '已中断' });
   for (const [status, message] of Object.entries({
@@ -484,10 +260,7 @@ async function main() {
   assert.equal(labels.jobDuration({ status: 'queued' }), '—');
   assert.equal(labels.jobDuration({ status: 'failed', startedAt: '无效时间' }), '—');
   assert.equal(labels.jobDuration({ startedAt: '2026-10-20T00:00:00Z', finishedAt: '2026-10-20T00:01:09Z' }), '1 分 9 秒');
-  await testAutoProgress(labels);
-  await testWorkbench(labels);
-  await testUnifiedUpload(labels);
-  await testTables(labels);
+  await testTaskPanel(labels);
   for (const relative of ['views/MyJobsView.vue', 'views/AdminJobsView.vue']) readComponent(relative);
   const app = mount('App.vue', labels, ['currentUser', 'page', 'syncPage'], () => fallback);
   app.view.currentUser.value = { role: 'user' };
@@ -528,6 +301,10 @@ async function testLogDialog() {
   assert.equal(page.view.error.value, '');
   assert.equal(page.view.lines.value.length, 0);
   page.unmount();
+  const adminLog = mount('components/JobLogDialog.vue', {}, names, () => ({ text: '管理员可见日志' }), { job: { id: 'other-job' }, admin: true });
+  await adminLog.start();
+  assert.equal(adminLog.calls[0].url, '/api/admin/jobs/other-job/log');
+  adminLog.unmount();
   const gate = deferred();
   const late = mount('components/JobLogDialog.vue', {}, names, () => gate.promise, { job: { id: 'late' } });
   const pending = late.view.loadLog(); late.unmount();

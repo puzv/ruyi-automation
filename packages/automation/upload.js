@@ -9,6 +9,7 @@ const { launchBrowser, closeBrowserContext } = require("./lib/browser");
 const { navigateWithLogin } = require("./lib/login");
 const { planUpload, prepareUpload, requireMapping, updateStage, pendingCandidates } = require("./lib/file-manifest");
 const { TASK_OUTCOME } = require("@ruyi/shared/runtime/task-outcome");
+const taskStore = require('@ruyi/shared/runtime/task-file-store');
 let uploadRoot;
 
 
@@ -31,13 +32,13 @@ const folderConfigs = [
 ];
 
 
-function getFiles(folder, idType) {
-  return pendingCandidates(uploadRoot)
+async function getFiles(folder, idType) {
+  return (await pendingCandidates(uploadRoot))
     .filter((item) => item.type === idType && path.dirname(item.path) === folder)
     .map((item) => item.path).sort();
 }
 
-function moveToDone(files, folder) {
+async function moveToDone(files, folder) {
   const doneDir = path.join(folder, "done");
   fs.mkdirSync(doneDir, { recursive: true });
   const destinations = files.map((file) => path.join(doneDir, path.basename(file)));
@@ -45,13 +46,13 @@ function moveToDone(files, folder) {
   if (existing) {
     throw new Error(`done 文件夹中已存在同名文件，不会覆盖：${existing}`);
   }
-  files.forEach((file, index) => {
-    updateStage(uploadRoot, withoutExtension(path.basename(file)), "uploaded");
+  for (const [index, file] of files.entries()) {
+    await updateStage(uploadRoot, withoutExtension(path.basename(file)), "uploaded");
     fs.renameSync(file, destinations[index]);
     const name = withoutExtension(path.basename(file));
-    updateStage(uploadRoot, name, "uploaded", destinations[index]);
+    await updateStage(uploadRoot, name, "uploaded", destinations[index]);
     console.log(`已移动到：${destinations[index]}`);
-  });
+  }
 }
 
 function withoutExtension(fileName) {
@@ -116,6 +117,7 @@ function findExistingFileInBatch(message, batch) {
 }
 
 function appendCreateGroupTodoList(uploadRoot, files) {
+  if (taskStore.enabled()) return;
   const candidates = [
     path.join(uploadRoot, "createGroupToDoList.json"),
     path.join(uploadRoot, "creategrouptodolist.json"),
@@ -225,8 +227,8 @@ async function waitForSubmitNavigationOrFailure(page, successUrl, timeout = 6000
 async function uploadFolder(context, page, config) {
   const completedFiles = [];
   const folder = path.join(uploadRoot, config.idType);
-  const pending = getFiles(folder, config.idType);
-  const managed = pending.some((file) => !requireMapping(uploadRoot, path.basename(file)).legacy);
+  const pending = await getFiles(folder, config.idType);
+  const managed = taskStore.enabled() || pending.some((file) => !requireMapping(uploadRoot, path.basename(file)).legacy);
   const files = managed ? pending.slice(0, 5) : resolveBatchNameCollisions(pending, folder, 5);
   if (files.length === 0) {
     console.log(`${config.idType.toUpperCase()} 文件夹没有待上传文件，跳过：${folder}`);
@@ -250,7 +252,7 @@ async function uploadFolder(context, page, config) {
       ),
     });
     await page.waitForTimeout(1500);
-    batch.forEach((file) => updateStage(uploadRoot, withoutExtension(path.basename(file)), "uploading"));
+    for (const file of batch) await updateStage(uploadRoot, withoutExtension(path.basename(file)), "uploading");
     await setUploadFiles(page, batch);
     await page.waitForTimeout(1000);
     console.log(`已一次性选择第 ${offset + 1}-${batchEnd}/${files.length} 个 ${config.idType.toUpperCase()} 文件：${batch.map((file) => path.basename(file)).join("、")}`);
@@ -275,6 +277,7 @@ async function uploadFolder(context, page, config) {
       await page.waitForTimeout(200);
     }
     let submitSuccessMessage = null;
+    if (taskStore.enabled()) for (const file of batch) await taskStore.beginOperation(uploadRoot, path.basename(file), 'upload');
     for (let attempt = 1; attempt <= 60; attempt += 1) {
       // The result page navigation can be lost even after batchCreate commits.
       // Observe the API response as the source of truth so a successful submit
@@ -309,12 +312,13 @@ async function uploadFolder(context, page, config) {
         break;
       }
       if (submitResult?.type === "failure") {
+        if (taskStore.enabled()) throw Object.assign(new Error(`平台提交未确认成功，已停止，请核对平台：${submitResult.message}`), { code: 'UNCERTAIN_PLATFORM_OPERATION' });
         const existingFile = findExistingFileInBatch(submitResult.message, batch);
         if (existingFile) {
           console.log(`检测到文件名已存在：${path.basename(existingFile)}，将其视为已处理并重新开始上传流程。`);
-          updateStage(uploadRoot, withoutExtension(path.basename(existingFile)), "uploaded");
+          await updateStage(uploadRoot, withoutExtension(path.basename(existingFile)), "uploaded");
           appendCreateGroupTodoList(uploadRoot, [existingFile]);
-          moveToDone([existingFile], folder);
+          await moveToDone([existingFile], folder);
           completedFiles.push(existingFile);
           return completedFiles;
         }
@@ -322,6 +326,7 @@ async function uploadFolder(context, page, config) {
         await page.waitForTimeout(2000);
         continue;
       }
+      if (taskStore.enabled()) throw Object.assign(new Error('平台提交结果尚未确认，已停止以避免重复导入'), { code: 'UNCERTAIN_PLATFORM_OPERATION' });
       console.log(`第 ${attempt} 次提交后 60 秒内未检测到结果，等待 2 秒后继续提交...`);
       await page.waitForTimeout(2000);
     }
@@ -329,9 +334,9 @@ async function uploadFolder(context, page, config) {
       throw new Error(`${config.idType.toUpperCase()} 第 ${offset / 5 + 1} 批提交重试 60 次后仍未成功，流程超时`);
     }
     console.log(`${config.idType.toUpperCase()} 第 ${offset / 5 + 1} 批已跳转到提交结果页面：${submitSuccessMessage}`);
-    batch.forEach((file) => updateStage(uploadRoot, withoutExtension(path.basename(file)), "uploaded"));
+    for (const file of batch) await updateStage(uploadRoot, withoutExtension(path.basename(file)), "uploaded");
     appendCreateGroupTodoList(uploadRoot, batch);
-    moveToDone(batch, folder);
+    await moveToDone(batch, folder);
     completedFiles.push(...batch);
   }
   return completedFiles;
@@ -342,20 +347,24 @@ async function main() {
   let context;
   let completedFiles = [];
   try {
-    const plan = planUpload(uploadRoot);
-    if (plan.named) prepareUpload(uploadRoot);
+    const plan = await planUpload(uploadRoot);
+    if (plan.named) await prepareUpload(uploadRoot);
     // A crash after queue persistence but before archive movement must resume
     // locally; never submit the already acknowledged batch again.
     for (const config of folderConfigs) {
       const folder = path.join(uploadRoot, config.idType);
-      const recovered = getFiles(folder, config.idType).filter((file) =>
-        requireMapping(uploadRoot, path.basename(file)).stage === "uploaded");
+      const recovered = [];
+      for (const file of await getFiles(folder, config.idType)) {
+        if ((await requireMapping(uploadRoot, path.basename(file))).stage === 'uploaded') recovered.push(file);
+      }
       if (recovered.length) {
         appendCreateGroupTodoList(uploadRoot, recovered);
-        moveToDone(recovered, folder);
+        await moveToDone(recovered, folder);
       }
     }
-    if (!folderConfigs.some((item) => getFiles(path.join(uploadRoot, item.idType), item.idType).length)) {
+    const available = [];
+    for (const item of folderConfigs) if ((await getFiles(path.join(uploadRoot, item.idType), item.idType)).length) available.push(item);
+    if (!available.length) {
       console.log("没有待上传文件，准备或恢复已完成。");
       return;
     }
@@ -365,10 +374,7 @@ async function main() {
       console.log(`检测到浏览器弹窗：${dialog.message()}`);
       await dialog.dismiss().catch(() => {});
     });
-    const config = folderConfigs.find((item) => {
-      const folder = path.join(uploadRoot, item.idType);
-      return getFiles(folder, item.idType).length > 0;
-    });
+    const config = available[0];
     if (config) {
       completedFiles = await uploadFolder(context, page, config);
     } else {
@@ -390,5 +396,5 @@ async function main() {
 if (require.main === module) main().catch((error) => {
   console.error(`上传流程失败：${error.message}`);
   process.exitCode = TASK_OUTCOME.FAILURE;
-});
+}).finally(() => taskStore.close());
 module.exports = { main, appendCreateGroupTodoList, platformFileName };

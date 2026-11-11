@@ -40,7 +40,7 @@ async function main() {
   assert.deepEqual([...TOOL_NAMES].sort(), actual.sort(), '工具常量必须与真实工具一致');
   const mentioned = [...skill.matchAll(/\b[a-z]+(?:_[a-z]+)+\b/g)].map((match) => match[0]);
   assert.ok(mentioned.length);
-  for (const name of mentioned) assert.ok(TOOL_NAMES.includes(name), `Skill 提到未知工具 ${name}`);
+  for (const name of mentioned) assert.ok(TOOL_NAMES.includes(name) || ['waiting_login', 'waiting_platform'].includes(name), `Skill 提到未知工具或状态 ${name}`);
 
   const originals = { tokens: { ...tokens }, sessions: { ...sessions } };
   const user = { id: 7, username: 'skill_test', role: 'user', status: 'active', must_change_password: 0 };

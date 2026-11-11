@@ -1,4 +1,4 @@
-const TOOL_NAMES = Object.freeze(['get_overview', 'check_platform', 'list_jobs', 'get_job', 'wait_for_job', 'prepare_upload', 'run_task', 'cancel_job', 'set_auto_advance', 'prepare_download']);
+const TOOL_NAMES = Object.freeze(['get_overview', 'check_platform', 'list_tasks', 'get_task', 'wait_for_task', 'prepare_upload', 'stop_task', 'continue_task', 'resume_task', 'list_task_files', 'rename_task', 'delete_task', 'exclude_task_file', 'prepare_download', 'list_jobs', 'get_job', 'wait_for_job', 'run_task', 'cancel_job', 'set_auto_advance']);
 const { createTicket } = require('../transfer/repository');
 const { version } = require('../../../package.json');
 const { uploadRoot: defaultUploadRoot } = require('@ruyi/shared/config');
@@ -6,27 +6,11 @@ const { uploadRoot: defaultUploadRoot } = require('@ruyi/shared/config');
 function publicUrl(request) {
   return (process.env.RUYI_PUBLIC_URL || `${request.protocol}://${request.host}`).replace(/\/+$/, '');
 }
-const fields = ['id', 'task', 'status', 'position', 'queuedAt', 'startedAt', 'finishedAt', 'exitCode', 'errorMessage', 'resultFiles'];
-const pickJob = (job) => job ? Object.fromEntries(fields.filter((key) => job[key] !== undefined).map((key) => [key, job[key]])) : null;
 function tail(text, limit = 8192) {
   const bytes = Buffer.from(text);
   let start = Math.max(0, bytes.length - limit);
   while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start++;
   return bytes.subarray(start).toString('utf8');
-}
-function decideNextStep(workspace, platform, active, auto, latestDownload) {
-  const choices = [
-    [platform.status !== 'valid', 'login', '如翼平台未登录或登录已失效，请完成平台登录后再继续。'],
-    [!!active.job, 'wait_job', '有排队或运行中的任务，请调用 wait_for_job 等待。'],
-    [workspace.pendingUpload > 0, 'run_upload', '有待上传文件，请调用 run_task(upload) 提交上传任务。'],
-    [workspace.createCount > 0, 'wait_platform_files', auto.enabled ? '等待平台处理文件，自动推进会自动创建人群。' : '等待平台处理文件，稍后调用 check_platform，文件就绪后调用 run_task(create) 创建人群。'],
-    [workspace.analyseCount > 0, 'wait_audience', auto.enabled ? '等待平台生成人群，自动推进会自动提交洞悉。' : '等待平台生成人群，稍后调用 check_platform，就绪后调用 run_task(analyse) 提交洞悉。'],
-    [!!latestDownload, 'prepare_download', '下载任务已结束，请调用 prepare_download 取得结果地址，再用 curl 保存到本地。'],
-    [workspace.doneCount > 0, auto.phase === 'resultsReady' ? 'run_download' : 'wait_results', auto.phase === 'resultsReady' ? '结果已就绪，请调用 run_task(download) 下载结果。' : '等待平台生成结果，稍后调用 check_platform；结果就绪后需手动下载，自动推进不会自动下载。'],
-    [true, 'import_files', '当前无待办，可调用 prepare_upload 导入新文件，不要读取文件内容。'],
-  ];
-  const [, action, message] = choices.find(([condition]) => condition);
-  return { action, message };
 }
 function createTools(app, request, reply, options = {}) {
   const loginUrl = `${publicUrl(request)}/#/platform-login`;
@@ -57,87 +41,113 @@ function createTools(app, request, reply, options = {}) {
       return { isError: true, content: [{ type: 'text', text: error.message }] };
     }
   };
-  async function job(jobId) {
-    const data = await api(`/api/jobs/${jobId}`);
-    const root = options.uploadRoot || defaultUploadRoot;
-    const log = String(data.job.output || data.output || '').split(root).join('<工作区>');
-    return { ...pickJob(data.job), logTail: tail(log) };
-  }
   async function ticket(purpose, jobId) {
     const created = await (options.createTicket || createTicket)(app.db, { userId: request.user.id, purpose, jobId });
     return { url: `${publicUrl(request)}/api/transfer/${purpose}/${created.secret}`, expiresAt: created.expiresAt };
   }
-  return {
+  async function wholeTask(taskId, includeLog = false) {
+    if (typeof taskId !== 'string' || !/^[a-f0-9-]{36}$/i.test(taskId)) throw new Error('请提供整任务 taskId');
+    const data = await api(`/api/tasks/${taskId}`);
+    const jobs = data.jobs || [];
+    const result = { ...data.item, taskId: data.item.id, jobs: jobs.slice(-50), jobCount: jobs.length };
+    if (includeLog && jobs.length) {
+      const latest = jobs[jobs.length - 1];
+      const detail = await api(`/api/jobs/${latest.id}`);
+      const root = options.uploadRoot || defaultUploadRoot;
+      const log = String(detail.job?.output || detail.output || '').split(root).join('<工作区>')
+        .replace(/ruyi_pat_[A-Za-z0-9_-]+/g, '<凭据>')
+        .replace(/Bearer\s+\S+/gi, 'Bearer <凭据>')
+        .replace(/(\/api\/transfer\/(?:upload|download)\/)\S+/g, '$1<票据>')
+        .replace(/(?:cookie|authorization|storageState|state_ciphertext)\s*[:=]\s*[^\n]+/gi, '<登录凭据已隐藏>');
+      result.logTail = tail(log);
+    }
+    return result;
+  }
+  async function mutate(taskId, action, version) {
+    const data = await wholeTask(taskId);
+    return api(`/api/tasks/${taskId}${action ? `/${action}` : ''}`, action ? 'POST' : 'DELETE', { version: version ?? data.version });
+  }
+  const wait = wrap(async ({ taskId, jobId, timeoutSeconds = 45 }) => {
+    const deadline = Date.now() + Math.min(50, Math.max(0, timeoutSeconds)) * 1000;
+    while (!closed) {
+      const data = await wholeTask(taskId || jobId);
+      const running = ['queued', 'running'].includes(data.status);
+      if (!running || Date.now() >= deadline) return success(running ? '等待超时，整任务仍在进行，可再次等待。' : data.status === 'waiting_login' ? loginMessage : '整任务已结束。', { ...data, timedOut: running });
+      await new Promise((resolve) => {
+        const done = () => { clearTimeout(timer); controller.signal.removeEventListener('abort', done); resolve(); };
+        const timer = setTimeout(done, Math.min(2000, Math.max(0, deadline - Date.now())));
+        controller.signal.addEventListener('abort', done, { once: true });
+        if (closed) done();
+      });
+    }
+    throw new Error('客户端已断开，停止等待');
+  });
+  const list = wrap(async ({ page = 1, pageSize = 10 }) => success('整任务列表', await api(`/api/tasks?page=${page}&pageSize=${pageSize}`)));
+  const detail = wrap(async ({ taskId, jobId }) => success('整任务详情（包含最近 50 条流程记录）', await wholeTask(taskId || jobId, true)));
+  const handlers = {
     prepare_upload: wrap(async () => {
-      if ((await api('/api/jobs/active')).job) throw new Error('当前用户有任务正在运行或排队，请等待完成后再导入');
+      if ((await api('/api/platform-state')).status !== 'valid') throw new Error(loginMessage);
       const { url, expiresAt } = await ticket('upload');
-      return success('请用 curl 直接上传，不要读取文件内容。链接 10 分钟有效且只能使用一次。', {
+      return success('请用 curl 直接上传，不要读取文件内容。上传成功即创建一个独立整任务并自动排队执行全部流程，无需再调用 run_task。链接 10 分钟有效且只能使用一次。', {
         uploadUrl: url, expiresAt,
         curlExample: `curl -sS -F "files=@/path/to/a_idfa.txt" -F "files=@/path/to/b_pn.csv" '${url}'`,
         rules: ['文件名需包含 idfa、oaid 或 pn，扩展名为 .txt 或 .csv。', '一个链接只能用一次，多个文件请在一条命令中一起上传。', '上传文件夹时先列出符合规则的文件，再逐个添加 -F；不要读取文件内容。'],
       });
     }),
-    run_task: wrap(async ({ task }) => {
-      const data = await api(`/api/run/${task}`, 'POST');
-      return success('任务已提交，请用 wait_for_job 等待。', { jobId: data.id, status: data.status, position: data.position });
-    }),
-    cancel_job: wrap(async ({ jobId }) => success('取消请求已提交。', await api(`/api/jobs/${jobId}/cancel`, 'POST'))),
-    set_auto_advance: wrap(async ({ enabled }) => {
-      const data = await api('/api/auto-advance', 'POST', { enabled });
-      return success(enabled ? '已开启自动推进。' : '已关闭自动推进。', { enabled: data.enabled, phase: data.phase, message: data.message });
-    }),
-    prepare_download: wrap(async ({ jobId }) => {
+    run_task: wrap(async () => { throw new Error('已切换整任务系统：请使用 prepare_upload 上传文件；上传成功后自动执行全部流程，不再支持单独提交步骤。'); }),
+    cancel_job: wrap(async ({ jobId, version }) => success('停止请求已提交，退出后为已中断，可继续。', await mutate(jobId, 'stop', version))),
+    set_auto_advance: wrap(async () => { throw new Error('整任务默认自动推进全部流程，不再提供旧工作区自动推进开关。'); }),
+    prepare_download: wrap(async ({ taskId, jobId: alias }) => {
+      if (taskId && alias && taskId !== alias) throw new Error('taskId 与兼容 jobId 必须指向同一个整任务');
+      const task = await wholeTask(taskId || alias);
+      if (task.status !== 'succeeded') throw new Error('整任务尚未成功完成，暂时不能下载结果');
+      const all = await api(`/api/tasks/${task.id}`);
+      const download = [...(all.jobs || [])].reverse().find((job) => job.task === 'download' && job.status === 'succeeded');
+      if (!download) throw new Error('整任务没有可下载的结果');
+      const jobId = download.id;
       const data = await api(`/api/jobs/${jobId}/results`);
       const { url, expiresAt } = await ticket('download', jobId);
       return success('请用 curl 保存结果，可自行指定保存目录。链接 10 分钟有效且只能使用一次。下载后不要解压或打开查看，只报告路径和大小，除非用户明确要求查看结果。', {
-        downloadUrl: url, expiresAt, fileCount: data.count, size: data.size,
+        taskId: task.id, downloadUrl: url, expiresAt, fileCount: data.count, size: data.size,
         curlExample: `curl -sS -fL -o ./ruyi-results-${jobId}.zip '${url}'`,
       });
     }),
     get_overview: wrap(async () => {
-      const [status, platform, active] = await Promise.all(['/api/status', '/api/platform-state', '/api/jobs/active'].map((url) => api(url)));
-      const autoResult = await callApi('GET', '/api/auto-advance');
-      const auto = autoResult.status === 404 ? { enabled: false, phase: 'unavailable', message: '服务未启用自动推进' } : (() => {
-        if (autoResult.status >= 400) throw new Error(autoResult.data.message || '请求失败');
-        return autoResult.data;
-      })();
-      const workspace = { status: status.workspaceStatus, pendingUpload: status.rawCount, createCount: status.createCount, analyseCount: status.analyseCount, doneCount: status.doneCount };
-      const recent = await api('/api/jobs?page=1&pageSize=20');
-      const latest = recent.items[0];
-      const latestDownload = latest?.task === 'download' && ['succeeded', 'failed'].includes(latest.status) && latest.resultFiles > 0 ? latest : null;
-      const nextStep = decideNextStep(workspace, platform, active, auto, latestDownload);
-      const data = { workspace, platformLogin: { status: platform.status, loginUrl }, activeJob: pickJob(active.job), autoAdvance: { enabled: auto.enabled, phase: auto.phase, message: auto.message }, nextStep, ...(nextStep.action === 'prepare_download' ? { resultJob: pickJob(latestDownload) } : {}) };
+      const [platform, recent] = await Promise.all([api('/api/platform-state'), api('/api/tasks?page=1&pageSize=20')]);
+      const nextStep = platform.status !== 'valid' ? { action: 'login', message: loginMessage }
+        : { action: 'list_tasks', message: '上传即创建整任务，按用户先进先出自动推进。使用 list_tasks 查看全部任务，get_task / wait_for_task 查看或等待指定整任务。' };
+      const data = { platformLogin: { status: platform.status, loginUrl }, tasks: recent.items, total: recent.total,
+        automatic: true, polling: { platformRetrySeconds: 30, waitForTaskSeconds: 2 }, nextStep };
       return success(nextStep.message, data);
     }),
     check_platform: wrap(async () => {
       if ((await api('/api/platform-state')).status !== 'valid') throw new Error(loginMessage);
-      const [status, counts] = await Promise.all([api('/api/status'), api('/api/platform-status')]);
-      const data = Object.fromEntries(['idfaPending', 'oaidPending', 'pnPending', 'insightPending', 'resultPending'].map((key) => [key, counts[key]]));
-      data.ready = { create: status.createCount > 0 && counts.idfaPending + counts.oaidPending + counts.pnPending === 0, analyse: status.analyseCount > 0 && counts.insightPending === 0, download: status.doneCount > 0 && counts.resultPending === 0 };
-      // 部分平台检查失败时不能把默认的零误认为已就绪。
-      if (counts.errors?.length) { data.ready = { create: false, analyse: false, download: false }; data.message = '部分平台检查失败，请稍后再试'; }
-      return success(`平台尚未就绪：IDFA 文件 ${data.idfaPending}，OAID 文件 ${data.oaidPending}，PN 文件 ${data.pnPending}，人群 ${data.insightPending}，结果 ${data.resultPending}。${data.message || ''}`, data);
+      return success('平台登录有效。每个整任务由 Worker 在隔离工作区自行检查平台进度，无需手动触发旧工作区检查。', { platformLogin: 'valid', automatic: true });
     }),
-    list_jobs: wrap(async ({ page = 1, pageSize = 10 }) => {
-      const data = await api(`/api/jobs?page=${page}&pageSize=${pageSize}`);
-      return success('任务列表', { items: data.items.map(pickJob), total: data.total, page: data.page, pageSize: data.pageSize });
+    list_tasks: list, list_jobs: list,
+    get_task: detail, get_job: detail,
+    wait_for_task: wait, wait_for_job: wait,
+    list_task_files: wrap(async ({ taskId }) => success('任务原始文件清单', await api(`/api/tasks/${taskId}/files`))),
+    stop_task: wrap(async ({ taskId, version }) => success('停止请求已提交，退出后为已中断，可继续。', await mutate(taskId, 'stop', version))),
+    continue_task: wrap(async ({ taskId, version }) => success('已请求继续中断任务。', await mutate(taskId, 'continue', version))),
+    resume_task: wrap(async ({ taskId, confirm }) => {
+      if (confirm !== true) throw new Error('恢复登录等待会将该用户所有等待登录任务重新入队，请向用户说明并明确确认后传 confirm=true');
+      return success('已恢复当前用户的等待登录任务。', await mutate(taskId, 'resume'));
     }),
-    get_job: wrap(async ({ jobId }) => success('任务详情', await job(jobId))),
-    wait_for_job: wrap(async ({ jobId, timeoutSeconds = 45 }) => {
-      const deadline = Date.now() + timeoutSeconds * 1000;
-      while (!closed) {
-        const data = await job(jobId);
-        const running = ['queued', 'running'].includes(data.status);
-        if (!running || Date.now() >= deadline) return success(running ? '等待超时，任务仍在进行，可再次等待。' : '任务已结束。', { ...data, timedOut: running });
-        await new Promise((resolve) => {
-          const done = () => { clearTimeout(timer); controller.signal.removeEventListener('abort', done); resolve(); };
-          const timer = setTimeout(done, Math.min(2000, Math.max(0, deadline - Date.now())));
-          controller.signal.addEventListener('abort', done, { once: true });
-          if (closed) done();
-        });
-      }
-      throw new Error('客户端已断开，停止等待');
+    rename_task: wrap(async ({ taskId, name, version }) => {
+      const data = await wholeTask(taskId);
+      return success('任务名称已更新。', await api(`/api/tasks/${taskId}/name`, 'PATCH', { name, version: version ?? data.version }));
+    }),
+    delete_task: wrap(async ({ taskId, version }) => {
+      const data = await wholeTask(taskId);
+      if (data.status === 'running') throw new Error('请先调用 stop_task，待任务已中断后再明确删除');
+      return success('任务已删除。', await mutate(taskId, '', version));
+    }),
+    exclude_task_file: wrap(async ({ taskId, fileId, version }) => {
+      const data = await wholeTask(taskId);
+      return success('已请求从后续执行清单移除该文件。', await api(`/api/tasks/${taskId}/files/${fileId}`, 'DELETE', { version: version ?? data.version }));
     }),
   };
+  return handlers;
 }
-module.exports = { TOOL_NAMES, createTools, publicUrl, tail, decideNextStep };
+module.exports = { TOOL_NAMES, createTools, publicUrl, tail };

@@ -27,9 +27,26 @@ async function enqueueJob(db, {
   return result ?? { ok: false, reason: "busy" };
 }
 
-async function claimNextJob(db, { workerId, claimToken }) {
+async function enqueueTaskJob(db, { id, taskId, userId, username, task, headless = true, requestId, workerId, claimToken }) {
+  await db.insertInto('ruyi_jobs').values({ id, task_id: taskId, user_id: userId, username, task,
+    headless: headless ? 1 : 0, request_id: requestId ?? null, status: 'running', worker_id: workerId,
+    claim_token: claimToken, started_at: sql`NOW(3)`, heartbeat_at: sql`NOW(3)` }).execute();
+  return getJob(db, id);
+}
+
+async function claimNextJob(db, { workerId, claimToken, maxConcurrent = 2 }) {
   return withClaimLock(db, async (conn) => {
+    const taskCount = await conn.selectFrom('ruyi_tasks').select(({ fn }) => fn.countAll().as('n'))
+      .where('status', '=', 'running').where('deleted_at', 'is', null).executeTakeFirstOrThrow();
+    const legacyCount = await conn.selectFrom('ruyi_jobs').select(({ fn }) => fn.countAll().as('n'))
+      .where('status', '=', 'running').where('task_id', 'is', null).executeTakeFirstOrThrow();
+    if (Number(taskCount.n) + Number(legacyCount.n) >= maxConcurrent) return null;
     const candidate = await conn.selectFrom("ruyi_jobs as j").select("j.id")
+      .where('j.task_id', 'is', null)
+      .where(({ not, exists, selectFrom }) => not(exists(
+        selectFrom('ruyi_tasks as t').select('t.id').whereRef('t.user_id', '=', 'j.user_id')
+          .where('t.status', 'in', ['running', 'waiting_login']).where('t.deleted_at', 'is', null),
+      )))
       .where("j.status", "=", "queued").where("j.cancel_requested", "=", 0)
       .where(({ not, exists, selectFrom }) => not(exists(
         selectFrom("ruyi_jobs as running").select("running.id")
@@ -148,6 +165,7 @@ function activeJobForUser(db, userId) {
 async function hasJobSince(db, userId, hours, taskTypes) {
   if (taskTypes && !taskTypes.length) return false;
   let query = db.selectFrom("ruyi_jobs").select("id").where("user_id", "=", userId)
+    .where("task_id", "is", null)
     .where("queued_at", ">=", sql`DATE_SUB(NOW(3), INTERVAL ${hours} HOUR)`);
   if (taskTypes) query = query.where("task", "in", taskTypes);
   const row = await query.executeTakeFirst();
@@ -162,6 +180,7 @@ async function hasRunningJob(db, userId) {
 
 module.exports = {
   withClaimLock, enqueueJob, claimNextJob, heartbeat, finishJob, setLogPath, requestCancel,
+  enqueueTaskJob,
   listCancelRequested, recoverStaleJobs, getJob, getJobForUser, queuePosition, listJobs,
   activeJobForUser, hasRunningJob, hasJobSince,
 };

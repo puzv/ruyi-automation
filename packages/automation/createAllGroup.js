@@ -8,6 +8,7 @@ const { findUploadRoot } = require("./lib/paths");
 const { readJsonArray } = require("./lib/files");
 const { checkPreflight } = require("./lib/preflight");
 const { TASK_OUTCOME } = require("@ruyi/shared/runtime/task-outcome");
+const taskStore = require('@ruyi/shared/runtime/task-file-store');
 
 function findCreateTodoPath(uploadRoot) {
   const candidates = [
@@ -77,6 +78,12 @@ async function inspectAudienceTotal() {
 }
 
 async function main() {
+  if (taskStore.enabled()) {
+    checkPreflight();
+    const count = (await taskStore.pending('create')).length;
+    if (count && (await inspectAudienceTotal()) + count >= audienceLimit) throw new Error('当前人群数量与待创建文件数量达到平台上限');
+    return taskStore.runAll('create', require.resolve('./createGroup.js'));
+  }
   checkPreflight({ taskFiles: ["createGroupToDoList.json", "creategrouptodolist.json", "analyseToDoList.json", "done.json"] });
   const uploadRoot = findUploadRoot();
   if (!uploadRoot) {
@@ -144,6 +151,6 @@ if (typeof module !== "undefined" && require.main === module) main().then((code)
 }).catch((error) => {
   console.error(`批量创建人群失败：${error.message}`);
   process.exitCode = 1;
-});
+}).finally(() => taskStore.close());
 
 module.exports = { main, readTodo, runCreateGroup };

@@ -3,8 +3,11 @@ const path = require('node:path')
 const { randomUUID } = require('node:crypto')
 const { decodeUploadedFileName, ensureWorkspace } = require('@ruyi/shared/runtime/workspace')
 
-async function importMultipartFiles(req, res, { workspace: workspaceDir, userHasRunningJob, includeFiles = false }) {
+async function importMultipartFiles(req, res, { workspace: workspaceDir, userHasRunningJob, canImportFiles, includeFiles = false }) {
   req.auditImport = { count: 0, skipped: 0, files: [] }
+  const loginRequired = () => res.code(409).send({ ok: false, code: 'PLATFORM_LOGIN_REQUIRED',
+    message: includeFiles ? '请先完成平台登录，再重新获取链接导入文件' : '请先完成平台登录，再导入文件' })
+  if (canImportFiles && !await canImportFiles(req)) return loginRequired()
   if (req.user && await userHasRunningJob(req)) return res.code(409).send({ ok: false, message: includeFiles ? '当前用户有任务正在运行，请完成后重新获取链接再导入文件' : '当前用户有任务正在运行，请完成后再导入文件' })
   let files
   try {
@@ -20,6 +23,8 @@ async function importMultipartFiles(req, res, { workspace: workspaceDir, userHas
     return res.code(400).send({ ok: false, message: includeFiles ? `${error.message}，请重新获取链接后重试` : error.message })
   }
   if (req.user && await userHasRunningJob(req)) return res.code(409).send({ ok: false, message: includeFiles ? '当前用户有任务正在运行，请完成后重新获取链接再导入文件' : '当前用户有任务正在运行，请完成后再导入文件' })
+  // 大文件接收期间可能清除登录态；落盘前复查，避免留下无法启动上传的文件。
+  if (canImportFiles && !await canImportFiles(req)) return loginRequired()
   try {
     const workspace = ensureWorkspace(workspaceDir)
     const rawDir = path.join(workspace, 'raw')

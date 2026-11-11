@@ -1,13 +1,18 @@
 const os = require('node:os')
 const { randomUUID } = require('node:crypto')
 const jobs = require('@ruyi/shared/runtime/repos/jobs')
+const taskRepo = require('@ruyi/shared/runtime/repos/tasks')
 const { writeLog } = require('@ruyi/shared/runtime/audit')
+const { isWaitingPlatform, isWaitingLogin } = require('@ruyi/shared/runtime/task-job-presentation')
 const { runJob } = require('./runner')
 
 function createWorker({ db, keys, log, dataRoot, workerId = `${os.hostname()}:${process.pid}`,
   maxConcurrent = Number(process.env.RUYI_MAX_CONCURRENT_JOBS), pollMs = 1000,
-  runner = runJob, runnerOptions = {}, staleSeconds = 60, onFinished }) {
+  runner = runJob, runnerOptions = {}, staleSeconds = 60, retryMs = 120000, onFinished,
+  taskRepository = taskRepo, jobRepository = jobs, auditWriter = writeLog }) {
   const limit = Number.isSafeInteger(maxConcurrent) && maxConcurrent > 0 ? maxConcurrent : 2
+  const tasks = taskRepository, jobRepo = jobRepository
+  const taskRuns = new Map()
   const running = new Map()
   const timers = new Set()
   const maintenance = new Set()
@@ -16,24 +21,28 @@ function createWorker({ db, keys, log, dataRoot, workerId = `${os.hostname()}:${
     requestId: job.request_id ?? job.requestId ?? null })
 
   async function auditFinish(job, result) {
-    if (result.stateExpired) await writeLog(db, { ...origin(job), action: 'platform.state_expired',
+    const waiting = isWaitingPlatform({ taskId: job.task_id, ...result })
+    const login = isWaitingLogin({ taskId: job.task_id, ...result })
+    if (result.stateExpired) await auditWriter(db, { ...origin(job), action: 'platform.state_expired',
       result: 'success', detail: { jobId: job.id } }, log)
-    await writeLog(db, { ...origin(job), action: 'job.finish', targetType: 'job', targetId: job.id,
-      result: result.status === 'succeeded' ? 'success' : 'failure', errorMessage: result.errorMessage,
-      detail: { task: job.task, status: result.status, code: result.exitCode ?? null, signal: result.exitSignal ?? null,
+    await auditWriter(db, { ...origin(job), action: 'job.finish', targetType: 'job', targetId: job.id,
+      result: waiting || login || result.status === 'succeeded' ? 'success' : 'failure', errorMessage: waiting || login ? null : result.errorMessage,
+      detail: { task: job.task, taskId: job.task_id ?? null, status: login ? 'waiting_login' : waiting ? 'waiting_platform' : result.status,
+        ...(waiting ? { outcome: 'not_ready' } : {}), ...(login ? { outcome: 'login_required' } : {}), code: result.exitCode ?? null, signal: result.exitSignal ?? null,
         durationMs: job.started_at ? Math.max(0, Date.now() - new Date(job.started_at).getTime()) : 0,
         queuedMs: job.started_at ? Math.max(0, new Date(job.started_at) - new Date(job.queued_at)) : 0,
-        stateRefreshed: Boolean(result.stateRefreshed), stateExpired: Boolean(result.stateExpired) },
+        stateRefreshed: Boolean(result.stateRefreshed), stateExpired: Boolean(result.stateExpired), loginRequired: Boolean(result.loginRequired) },
     }, log)
   }
 
   async function recover() {
-    const rows = await jobs.recoverStaleJobs(db, { staleSeconds })
+    const rows = await jobRepo.recoverStaleJobs(db, { staleSeconds })
     for (const recovered of rows) {
-      const job = await jobs.getJob(db, recovered.id)
+      const job = await jobRepo.getJob(db, recovered.id)
       await auditFinish(job ?? recovered, { status: 'interrupted',
         errorMessage: '服务重启或异常退出，任务已中断' })
     }
+    await tasks.recoverStaleTasks(db, { staleSeconds })
   }
 
   function periodic(fn, ms) {
@@ -48,7 +57,7 @@ function createWorker({ db, keys, log, dataRoot, workerId = `${os.hostname()}:${
     timers.add(timer)
   }
 
-  function launch(job) {
+  function launch(job, afterFinish) {
     const controller = new AbortController()
     const entry = { job, controller, interrupted: stopping }
     running.set(job.id, entry)
@@ -57,9 +66,10 @@ function createWorker({ db, keys, log, dataRoot, workerId = `${os.hostname()}:${
       if (entry.finishing) return entry.finishing
       entry.finishing = (async () => {
         if (entry.interrupted) result = { ...result, status: 'interrupted', errorMessage: '服务停止，任务已中断' }
-        const updated = await jobs.finishJob(db, { id: job.id, claimToken: job.claim_token, ...result })
+        const updated = await jobRepo.finishJob(db, { id: job.id, claimToken: job.claim_token, ...result })
         if (updated) await auditFinish(job, result)
         else log?.info('任务已被其他 Worker 回收，跳过结束操作记录')
+        if (updated) await afterFinish?.(result)
       })()
       return entry.finishing
     }
@@ -76,9 +86,77 @@ function createWorker({ db, keys, log, dataRoot, workerId = `${os.hostname()}:${
       .finally(() => {
         running.delete(job.id)
         // 任务刚结束时平台状态最可能发生变化，让自动推进立即检查一次。
-        try { onFinished?.(job) } catch (_) { log?.error('任务结束通知失败') }
+        try { if (!job.task_id) onFinished?.(job) } catch (_) { log?.error('任务结束通知失败') }
         wake()
       })
+    return entry.promise
+  }
+
+  function launchTask(task) {
+    const controller = new AbortController()
+    const entry = { task, controller }
+    taskRuns.set(task.id, entry)
+    const finish = (status, errorMessage) => tasks.finishTask(db, {
+      id: task.id, claimToken: task.claim_token, status, errorMessage,
+    })
+    entry.promise = (async () => {
+      while (true) {
+        const current = await tasks.getTaskForUser(db, task.id, task.user_id)
+        if (!current || current.status !== 'running' || current.claim_token !== task.claim_token) return
+        if (stopping) { await finish('interrupted', '服务停止，任务已中断'); return }
+        if (current.cancel_requested) { await finish('interrupted', '用户停止，任务已中断，可继续任务'); return }
+        await tasks.setTaskNextCheck(db, { id: task.id, claimToken: task.claim_token, nextCheckAt: null })
+        const job = await jobRepo.enqueueTaskJob(db, { id: randomUUID(), taskId: task.id,
+          userId: task.user_id, username: task.username, task: current.current_step,
+          headless: true, workerId, claimToken: randomUUID() })
+        // 子进程读写逐文件状态时必须同时证明整任务和子流程的当前租约。
+        job.task_claim_token = task.claim_token
+        let retry = false, advance = false
+        await launch(job, async (result) => {
+          const latest = await tasks.getTaskForUser(db, task.id, task.user_id)
+          if (latest?.cancel_requested && result.status !== 'interrupted') {
+            await finish('interrupted', '用户停止，任务已中断，可继续任务')
+          } else if (['cancelled', 'interrupted'].includes(result.status)) {
+            await finish(result.status, result.errorMessage)
+          } else if (result.loginRequired || result.stateExpired) {
+            const frozen = await tasks.markUserWaitingLogin(db, { id: task.id, userId: task.user_id, claimToken: task.claim_token })
+            if (!frozen) {
+              const latest = await tasks.getTaskForUser(db, task.id, task.user_id)
+              if (latest?.status === 'running' && latest.claim_token === task.claim_token && latest.cancel_requested) {
+                await finish('interrupted', '用户停止，任务已中断，可继续任务')
+              }
+            }
+          } else if (result.outcome === 'not_ready') {
+            retry = await tasks.setTaskNextCheck(db, { id: task.id, claimToken: task.claim_token, nextCheckAt: new Date(Date.now() + retryMs) })
+          } else if (result.status === 'succeeded') {
+            const next = { upload: 'create', create: 'analyse', analyse: 'download', download: null }[current.current_step]
+            if (next) advance = await tasks.updateTaskStep(db, { id: task.id, claimToken: task.claim_token, currentStep: next })
+            else await finish('succeeded')
+          } else await finish('failed', result.errorMessage)
+        })
+        if (retry) {
+          // 平台异步处理中仍持有整任务租约，保留同用户串行次序并避免热循环。
+          await new Promise((resolve) => {
+            const done = () => { clearTimeout(timer); controller.signal.removeEventListener('abort', done); resolve() }
+            const timer = setTimeout(done, retryMs)
+            controller.signal.addEventListener('abort', done, { once: true })
+            if (controller.signal.aborted) done()
+          })
+          continue
+        }
+        if (!advance) {
+          const latest = await tasks.getTaskForUser(db, task.id, task.user_id)
+          if (latest?.status === 'running' && latest.claim_token === task.claim_token) {
+            await finish('failed', '流程执行记录保存失败，任务已停止')
+          }
+          return
+        }
+      }
+    })().catch(async () => {
+      log?.error('Worker 推进整任务失败')
+      await finish(stopping ? 'interrupted' : 'failed', '任务推进失败，请联系管理员')
+    }).catch(() => log?.error('Worker 保存整任务状态失败，将由心跳回收'))
+      .finally(() => { taskRuns.delete(task.id); wake() })
   }
 
   function wake() {
@@ -86,8 +164,10 @@ function createWorker({ db, keys, log, dataRoot, workerId = `${os.hostname()}:${
     clearTimeout(pollTimer)
     if (pumping) { wakePending = true; return }
     pumping = (async () => {
-      while (!stopping && running.size < limit) {
-        const job = await jobs.claimNextJob(db, { workerId, claimToken: randomUUID() })
+      while (!stopping && taskRuns.size + [...running.values()].filter((entry) => !entry.job.task_id).length < limit) {
+        const task = await tasks.claimNextTask(db, { workerId, claimToken: randomUUID(), maxConcurrent: limit })
+        if (task) { launchTask(task); continue }
+        const job = await jobRepo.claimNextJob(db, { workerId, claimToken: randomUUID(), maxConcurrent: limit })
         if (!job) break
         launch(job)
       }
@@ -108,9 +188,17 @@ function createWorker({ db, keys, log, dataRoot, workerId = `${os.hostname()}:${
       if (stopping) return
       started = true
       // 结束写库失败的任务已离开执行集合，停止续租后可由回收流程中断。
-      periodic(() => jobs.heartbeat(db, { workerId, jobIds: [...running.keys()] }), 15000)
+      periodic(() => jobRepo.heartbeat(db, { workerId, jobIds: [...running.keys()] }), 15000)
+      periodic(() => tasks.heartbeatTasks(db, { workerId, taskIds: [...taskRuns.keys()] }), 15000)
       periodic(async () => {
-        for (const job of await jobs.listCancelRequested(db, { workerId })) running.get(job.id)?.controller.abort()
+        for (const job of await jobRepo.listCancelRequested(db, { workerId })) running.get(job.id)?.controller.abort()
+      }, 2000)
+      periodic(async () => {
+        const rows = await db.selectFrom('ruyi_tasks').selectAll().where('worker_id', '=', workerId).where('status', '=', 'running').where('cancel_requested', '=', 1).execute()
+        for (const task of rows) {
+          taskRuns.get(task.id)?.controller.abort()
+          for (const entry of running.values()) if (entry.job.task_id === task.id) entry.controller.abort()
+        }
       }, 2000)
       periodic(recover, 30000)
       wake()
@@ -124,6 +212,7 @@ function createWorker({ db, keys, log, dataRoot, workerId = `${os.hostname()}:${
     clearTimeout(pollTimer)
     for (const timer of timers) clearInterval(timer)
     const abortAll = () => {
+      for (const entry of taskRuns.values()) entry.controller.abort()
       for (const entry of running.values()) {
         entry.interrupted = true
         entry.controller.abort()
@@ -137,7 +226,7 @@ function createWorker({ db, keys, log, dataRoot, workerId = `${os.hostname()}:${
           await starting?.catch(() => {})
           await pumping
           abortAll()
-          await Promise.allSettled([...running.values()].map((entry) => entry.promise))
+          await Promise.allSettled([...running.values(), ...taskRuns.values()].map((entry) => entry.promise))
           await Promise.allSettled([...maintenance])
         })(),
         new Promise((resolve) => { deadline = setTimeout(resolve, 10000) }),

@@ -126,6 +126,7 @@ function checkPreflight({ taskFiles = [] } = {}) {
   }
 
   for (const fileName of taskFiles) {
+    if (require('@ruyi/shared/runtime/task-file-store').enabled()) continue;
     const filePath = path.join(config.uploadRoot, fileName);
     if (!fs.existsSync(filePath)) continue;
     try {

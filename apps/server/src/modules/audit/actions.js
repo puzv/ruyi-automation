@@ -2,7 +2,7 @@ const { writeLog, auditFromRequest } = require('@ruyi/shared/runtime/audit');
 
 // 仅为列出的业务动作构造白名单字段，绝不把请求正文整体写入记录。
 async function auditResponse(request, reply, payload) {
-  if (!this.auditEnabled || request.method !== 'POST') return payload;
+  if (!this.auditEnabled || !['POST', 'PATCH', 'DELETE'].includes(request.method)) return payload;
   const route = request.routeOptions.url;
   let response;
   try { response = JSON.parse(payload); } catch (_) { return payload; }
@@ -10,6 +10,42 @@ async function auditResponse(request, reply, payload) {
   const entry = { result: success ? 'success' : 'failure' };
   if (!success) entry.errorMessage = reply.statusCode >= 500 ? '操作失败，请查看服务日志' : response.message;
   switch (route) {
+    case '/api/tasks':
+      if (request.method !== 'POST') return payload;
+      entry.action = 'task.create'; entry.targetType = 'task'; entry.targetId = request.auditTask?.id;
+      entry.detail = request.auditTask ? { name: request.auditTask.name, count: request.auditTask.count,
+        skipped: request.auditTask.skipped, files: request.auditTask.files } : { count: 0 };
+      break;
+    case '/api/tasks/:id/name':
+      if (request.method !== 'PATCH') return payload;
+      entry.action = 'task.rename'; entry.targetType = 'task'; entry.targetId = request.params.id;
+      entry.detail = request.auditTask ? { name: request.auditTask.name } : undefined;
+      break;
+    case '/api/tasks/:id/stop':
+      if (request.method !== 'POST') return payload;
+      entry.action = 'task.stop'; entry.targetType = 'task'; entry.targetId = request.params.id;
+      entry.detail = { status: response.status };
+      break;
+    case '/api/tasks/:id/continue':
+      if (request.method !== 'POST') return payload;
+      entry.action = 'task.continue'; entry.targetType = 'task'; entry.targetId = request.params.id;
+      entry.detail = request.auditTask ? { status: request.auditTask.status, currentStep: request.auditTask.currentStep } : undefined;
+      break;
+    case '/api/tasks/:id/resume':
+      if (request.method !== 'POST') return payload;
+      entry.action = 'task.resume'; entry.targetType = 'task'; entry.targetId = request.params.id;
+      entry.detail = { resumed: Number(response.resumed) || 0 };
+      break;
+    case '/api/tasks/:id/files/:fileId':
+      if (request.method !== 'DELETE') return payload;
+      entry.action = 'task.file_exclude'; entry.targetType = 'task_file'; entry.targetId = request.params.fileId;
+      entry.detail = { taskId: request.params.id, status: response.status };
+      break;
+    case '/api/tasks/:id':
+      if (request.method !== 'DELETE') return payload;
+      entry.action = 'task.delete'; entry.targetType = 'task'; entry.targetId = request.params.id;
+      entry.detail = { status: response.status };
+      break;
     case '/api/auth/register':
       entry.action = 'auth.register';
       entry.username = typeof request.body?.username === 'string' ? request.body.username.slice(0, 32) : null;
@@ -48,11 +84,15 @@ async function auditResponse(request, reply, payload) {
       break;
     case '/api/transfer/upload/:ticket':
       if (!request.user) return payload;
+      entry.action = 'task.create'; entry.targetType = 'task'; entry.targetId = request.auditTask?.id;
+      entry.detail = request.auditTask ? { name: request.auditTask.name, count: request.auditTask.count,
+        skipped: request.auditTask.skipped, files: request.auditTask.files, via: 'transfer_ticket' }
+        : { count: 0, via: 'transfer_ticket' };
+      if (!success) entry.errorMessage = '任务创建失败，请重新获取链接';
+      break;
     case '/api/import-folder':
       entry.action = 'file.import'; entry.targetType = 'file_batch';
-      entry.detail = { ...(request.auditImport || { count: 0, skipped: 0, files: [] }),
-        ...(route === '/api/transfer/upload/:ticket' ? { via: 'transfer_ticket' } : {}) };
-      if (!success && route === '/api/transfer/upload/:ticket') entry.errorMessage = '文件导入失败，请重新获取链接';
+      entry.detail = request.auditImport || { count: 0, skipped: 0, files: [] };
       break;
     case '/api/run/:task':
       entry.action = 'job.start'; entry.targetType = 'job'; entry.targetId = response.id;

@@ -11,6 +11,10 @@ const TOKEN_ROUTES = new Set([
   'POST /api/jobs/:id/cancel',
   'GET /api/auto-advance', 'POST /api/auto-advance', 'POST /api/auto-advance/check',
   'GET /api/auto-advance/phases', 'GET /api/logs/mine',
+  'POST /api/tasks', 'GET /api/tasks', 'GET /api/tasks/:id', 'GET /api/tasks/:id/files',
+  'PATCH /api/tasks/:id/name', 'POST /api/tasks/:id/stop',
+  'POST /api/tasks/:id/continue', 'POST /api/tasks/:id/resume',
+  'DELETE /api/tasks/:id', 'DELETE /api/tasks/:id/files/:fileId',
 ]);
 const { COOKIE_NAME, hashToken, publicUser } = require('./session');
 

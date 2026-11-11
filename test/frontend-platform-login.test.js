@@ -94,23 +94,12 @@ async function testWorkbench() {
     },
   };
   const script = workbench.scriptSetup.content.replace(/^import[\s\S]*?from '[^']+'\n/gm, '');
-  const view = vm.runInNewContext(`${script}\n;({ refreshPlatformState, platformState, runTask, running, notice, platformLoginRequired })`, sandbox, { filename: workbenchFile });
+  const view = vm.runInNewContext(`${script}\n;({ refreshPlatformState, platformState })`, sandbox, { filename: workbenchFile });
   for (status of ['none', 'valid', 'expired']) {
     await view.refreshPlatformState();
     assert.equal(view.platformState.value.status, status);
   }
-  await view.runTask('下载结果');
-  assert.equal(view.platformLoginRequired.value, true);
-  assert.equal(view.notice.value, '请先完成平台登录');
-  assert.equal(view.running.value, '');
-  required = false;
-  const before = calls.filter((url) => url === '/api/platform-state').length;
-  await view.runTask('下载结果');
-  await flush();
-  assert.equal(view.platformLoginRequired.value, false);
-  assert.equal(view.running.value, '');
-  assert.equal(calls.filter((url) => url === '/api/platform-state').length, before + 1);
-  assert.equal(calls.some((url) => /login-status|login-open|profile-release/.test(url)), false);
+  assert.equal(calls.every((url) => url === '/api/platform-state'), true, '布局组件仅查询登录状态，不执行旧工作流');
 }
 
 async function main() {
@@ -252,7 +241,7 @@ async function main() {
   assert.equal(page.location.hash, '#/platform-login');
   await page.tick(2000);
   assert.equal(view.summary.value.status, 'valid');
-  assert.equal(page.location.hash, '#/');
+  assert.equal(page.location.hash, '#/jobs');
   assert.equal(storage.has('platform-login-session:7'), false);
   assert.ok(view.expiryHours.value < 6);
   assert.match(view.expiryLabel.value, /约 3 小时后过期/);

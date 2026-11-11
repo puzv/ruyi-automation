@@ -289,3 +289,42 @@ module.exports = {
   namedMode, readTaskArray, planUpload, prepareUpload, updateStage, platformStem,
   resolveDownloadTarget, saveDownloadedFile,
 }
+
+// 整任务路径只读取数据库，历史脚本模式不参与新任务推进。
+const taskStore = require('@ruyi/shared/runtime/task-file-store')
+if (taskStore.enabled()) {
+  Object.assign(module.exports, {
+    readManifest: async () => ({ version: 1, files: (await taskStore.files()).filter((r) => !r.excluded_at).map(taskStore.mapping) }),
+    writeManifest: async () => { throw new Error('整任务映射由数据库管理，禁止覆盖清单') },
+    requireMapping: taskStore.requireMapping, requireTaskMapping: taskStore.requireMapping,
+    findByPlatformName: taskStore.requireMapping,
+    resolveFileType: async (root, name) => (await taskStore.requireMapping(root, name)).type,
+    groupPlatformNames: async (root, names) => {
+      const groups = { idfa: [], oaid: [], pn: [] }
+      for (const name of names) { const row = await taskStore.requireMapping(root, name); groups[row.type].push(row.platformName) }
+      return groups
+    },
+    preflightDuplicateOriginalNames: async (root) => taskStore.candidates(root),
+    updateStage: taskStore.updateStage, pendingCandidates: taskStore.candidates,
+    planUpload: async (root) => ({ named: true, candidates: await taskStore.candidates(root) }),
+    prepareUpload: async (root) => ({ named: true, candidates: await taskStore.candidates(root) }),
+    readTaskArray: async (_root, name) => (await taskStore.pending(name.startsWith('create') ? 'create' : name.startsWith('analyse') ? 'analyse' : 'download')).map((r) => r.platform_name),
+    resolveDownloadTarget: async (root, name, suggested) => {
+      const row = await taskStore.requireMapping(root, name)
+      assertSafeName(suggested, '下载文件名')
+      const extension = path.extname(suggested)
+      if (!/^\.[A-Za-z0-9]+$/.test(extension)) throw new Error('下载结果格式无效')
+      const resultName = `${path.basename(row.originalName, path.extname(row.originalName))}${extension}`
+      return require('@ruyi/shared/runtime/db-job-results').resolveResultTarget(root, taskStore.context().jobId, resultName, { db: taskStore.db(), ...taskStore.context() })
+    },
+    saveDownloadedFile: async (root, name, suggested, source) => {
+      const row = await taskStore.requireMapping(root, name)
+      assertSafeName(suggested, '下载文件名')
+      const extension = path.extname(suggested)
+      if (!/^\.[A-Za-z0-9]+$/.test(extension)) throw new Error('下载结果格式无效')
+      const resultName = `${path.basename(row.originalName, path.extname(row.originalName))}${extension}`
+      const result = await require('@ruyi/shared/runtime/db-job-results').recordResult(root, taskStore.context().jobId, source, resultName, { db: taskStore.db(), ...taskStore.context(), fileId: row.id })
+      return result
+    },
+  })
+}

@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { apiFetch } from '../api.js'
 import { formatTime, jobStatusLabels, taskLabels } from '../labels.js'
 
-const props = defineProps({ job: { type: Object, required: true } })
+const props = defineProps({ job: { type: Object, required: true }, admin: Boolean })
 const emit = defineEmits(['close'])
 const dialog = ref(null)
 const output = ref('')
@@ -12,7 +12,7 @@ const error = ref('')
 const query = ref('')
 const wrap = ref(true)
 const updatedAt = ref('')
-const logUrl = computed(() => `/api/jobs/${encodeURIComponent(props.job.id)}/log`)
+const logUrl = computed(() => `${props.admin ? '/api/admin/jobs' : '/api/jobs'}/${encodeURIComponent(props.job.id)}/log`)
 const lines = computed(() => output.value ? output.value.split(/\r?\n/).map((text, index) => ({ text, number: index + 1 })) : [])
 const matches = computed(() => {
   const keyword = query.value.trim().toLowerCase()
@@ -63,7 +63,7 @@ onBeforeUnmount(() => { disposed = true; controller?.abort(); previousFocus?.foc
         <button class="log-close" type="button" autofocus aria-label="关闭日志" @click="emit('close')">×</button>
       </header>
       <div class="log-job-meta">
-        <span class="result-badge" :class="`job-status-${job.status}`">{{ jobStatusLabels[job.status] || job.status }}</span>
+        <span class="result-badge" :class="`job-status-${job.status}`">{{ job.status === 'waiting_platform' ? '等待平台处理' : job.status === 'waiting_login' ? '等待登录' : jobStatusLabels[job.status] || job.status }}</span>
         <span>提交于 {{ formatTime(job.queuedAt) }}</span>
         <span class="log-job-id">任务 ID：{{ job.id }}</span>
       </div>

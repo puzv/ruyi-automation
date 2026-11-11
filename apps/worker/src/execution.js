@@ -47,9 +47,15 @@ function signalJobProcess(job, signal) {
 }
 
 // 内存测试路径与数据库 Worker 共用进程及登录态生命周期。
-function executeTask({ id, script, user, uploadDir, headless, platformState, db, keys, log,
+function executeTask({ id, businessTaskId, script, user, uploadDir, headless, platformState, db, keys, log,
   signal, onOutput = () => {}, spawnImpl = spawn, env: extraEnv }) {
-  const env = { ...process.env, ...extraEnv, RUYI_JOB_ID: id, RUYI_HEADLESS: headless ? '1' : '0' }
+  const env = { ...process.env, ...extraEnv, RUYI_JOB_ID: businessTaskId || id, RUYI_HEADLESS: headless ? '1' : '0' }
+  const executionKeys = ['RUYI_TASK_ID', 'RUYI_USER_ID', 'RUYI_EXECUTION_JOB_ID', 'RUYI_JOB_CLAIM_TOKEN', 'RUYI_TASK_CLAIM_TOKEN', 'RUYI_TASK_FILE_ID']
+  // 旧独立步骤不能意外继承另一个任务的数据库执行上下文。
+  for (const key of executionKeys) delete env[key]
+  if (businessTaskId) for (const key of executionKeys) {
+    if (extraEnv?.[key] !== undefined) env[key] = String(extraEnv[key])
+  }
   if (user) env.RUYI_USER = user.username
   if (uploadDir) env.RUYI_UPLOAD_DIR = path.resolve(uploadDir)
   let dir, file, initialHash, child

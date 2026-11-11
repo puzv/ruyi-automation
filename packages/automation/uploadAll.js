@@ -7,6 +7,7 @@ const { requireUploadRoot } = require("./lib/paths");
 const { checkPreflight } = require("./lib/preflight");
 const { planUpload, prepareUpload, pendingCandidates } = require("./lib/file-manifest");
 const { TASK_OUTCOME } = require("@ruyi/shared/runtime/task-outcome");
+const taskStore = require('@ruyi/shared/runtime/task-file-store');
 
 function getPendingFiles(uploadRoot) {
   return pendingCandidates(uploadRoot)
@@ -120,6 +121,7 @@ function runScript(scriptName) {
 }
 
 function main() {
+  if (taskStore.enabled()) return taskStore.runAll('upload', require.resolve('./upload.js'));
   const uploadRoot = requireUploadRoot("upload");
   const plan = planUpload(uploadRoot);
   checkPreflight({ taskFiles: ["createGroupToDoList.json", "analyseToDoList.json", "done.json"] });
@@ -158,9 +160,9 @@ function main() {
 }
 
 if (require.main === module) {
-  try { process.exitCode = main(); } catch (error) {
+  Promise.resolve().then(() => main()).then((code) => { process.exitCode = code; }).catch((error) => {
     console.error(`上传任务失败：${error.message}`);
     process.exitCode = TASK_OUTCOME.FAILURE;
-  }
+  }).finally(() => taskStore.close());
 }
 module.exports = { main, getPendingFiles, normalizeRawFileNames, runScript };

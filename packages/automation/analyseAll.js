@@ -7,6 +7,7 @@ const { requireUploadRoot } = require("./lib/paths");
 const { readJsonArray } = require("./lib/files");
 const { checkPreflight } = require("./lib/preflight");
 const { TASK_OUTCOME } = require("@ruyi/shared/runtime/task-outcome");
+const taskStore = require('@ruyi/shared/runtime/task-file-store');
 const { withoutExtension } = require("@ruyi/shared/runtime/workspace");
 
 function getPending(uploadRoot) {
@@ -42,6 +43,7 @@ function runAnalyse() {
 }
 
 function main() {
+  if (taskStore.enabled()) return taskStore.runAll('analyse', require.resolve('./analyse.js'));
   checkPreflight({ taskFiles: ["analyseToDoList.json", "done.json"] });
   const uploadRoot = requireUploadRoot();
 
@@ -84,12 +86,10 @@ function main() {
 }
 
 if (typeof module !== "undefined" && require.main === module) {
-  try {
-    process.exitCode = main();
-  } catch (error) {
+  Promise.resolve().then(() => main()).then((code) => { process.exitCode = code; }).catch((error) => {
     console.error(`批量分析失败：${error.message}`);
     process.exitCode = TASK_OUTCOME.FAILURE;
-  }
+  }).finally(() => taskStore.close());
 }
 
 if (typeof module !== "undefined") module.exports = { main, getPending, runAnalyse };

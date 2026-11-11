@@ -11,6 +11,8 @@ const page = ref(1)
 const total = ref(0)
 const loading = ref(false)
 const error = ref('')
+const context = ref('')
+let snapshot = ''
 const pages = computed(() => Math.max(1, Math.ceil(total.value / 20)))
 async function load(nextPage = 1, search = false) {
   if (loading.value) return
@@ -21,8 +23,12 @@ async function load(nextPage = 1, search = false) {
   try {
     const query = new URLSearchParams({ page: String(nextPage), pageSize: '20' })
     for (const [key, value] of Object.entries(selected)) if (value) query.set(key, value)
+    if (!search && snapshot) query.set('snapshot', snapshot)
     const data = await requestJson(`/api/admin/logs?${query}`)
     items.value = data.items; total.value = data.total; page.value = data.page
+    snapshot = data.snapshot || ''
+    if (snapshot) query.set('snapshot', snapshot)
+    query.delete('page'); query.delete('pageSize'); context.value = query.toString()
     appliedFilters = selected
   } catch (failure) { error.value = failure.message } finally { loading.value = false }
 }
@@ -41,8 +47,8 @@ onMounted(() => load())
         <button class="primary-button" :disabled="loading">查询</button>
       </form>
       <p v-if="error" class="form-error" role="alert">{{ error }}</p>
-      <LogTable :items="items" admin :loading="loading" />
-      <div class="pagination"><button class="secondary-button" :disabled="loading || page <= 1" @click="load(page - 1)">上一页</button><span>第 {{ page }} / {{ pages }} 页，共 {{ total }} 条</span><button class="secondary-button" :disabled="loading || page >= pages" @click="load(page + 1)">下一页</button></div>
+      <LogTable :items="items" admin :loading="loading" :context="context" />
+      <div class="pagination"><button class="secondary-button" :disabled="loading || page <= 1" @click="load(page - 1)">上一页</button><span>第 {{ page }} / {{ pages }} 页，共 {{ total }} 个展示条目</span><button class="secondary-button" :disabled="loading || page >= pages" @click="load(page + 1)">下一页</button></div>
     </section>
   </main>
 </template>

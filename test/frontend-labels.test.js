@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 async function main() {
-  const { actionLabels, logDescription, logTarget } = await import('../apps/web/src/labels.js');
+  const { actionLabels, isLoginWaitLog, isPlatformWaitLog, logDescription, logTarget } = await import('../apps/web/src/labels.js');
   const actions = new Set();
   function scan(dir) {
     for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -26,6 +26,14 @@ async function main() {
   assert.equal(actionLabels['job.results_download'], '下载任务结果');
   assert.equal(logTarget({ targetType: 'api_token', targetId: 7 }), 'API 令牌 · 7');
   assert.equal(logDescription({ action: 'token.create', detail: { name: '我的工具', expiresInDays: 90 } }), '名称：我的工具，有效期 90 天');
+  assert.ok(logDescription({ action: 'job.finish', result: 'success', detail: { task: 'analyse', status: 'waiting_platform', outcome: 'not_ready', code: 2 } }).includes('等待平台处理'));
+  assert.equal(logDescription({ action: 'job.finish', result: 'failure', errorMessage: '真实失败', detail: { task: 'analyse', code: 1 } }), '真实失败');
+  assert.equal(isLoginWaitLog({ action: 'job.finish', detail: { status: 'waiting_login', outcome: 'login_required' } }), true);
+  assert.ok(logDescription({ action: 'job.finish', result: 'failure', detail: { status: 'waiting_login', outcome: 'login_required', task: 'create' } }).includes('等待重新登录'));
+  assert.equal(isPlatformWaitLog({ action: 'job.finish', detail: { status: 'waiting_platform', outcome: 'not_ready', code: 2 } }), true);
+  for (const override of [{ code: 1 }, { signal: 'SIGTERM' }, { stateExpired: true }]) {
+    assert.equal(isPlatformWaitLog({ action: 'job.finish', detail: { status: 'waiting_platform', outcome: 'not_ready', code: 2, ...override } }), false);
+  }
   for (const [via, suffix] of [[undefined, ''], ['api_token', '（AI 工具）'], ['transfer_ticket', '（AI 工具 · 一次性链接）']]) {
     assert.equal(logDescription({ action: 'job.start', detail: { task: 'upload', via } }), `上传文件${suffix}`);
     assert.equal(logDescription({ action: 'file.import', detail: { count: 1, skipped: 0, via } }), `导入 1 个，跳过 0 个${suffix}`);
