@@ -92,13 +92,25 @@ async function main() {
     assert.equal(run[0][0], step)
     assert.equal(path.isAbsolute(run[0][1]), true)
   }
-  async function exerciseScript(filename, step, failWrite = false) {
+  async function exerciseScript(filename, step, failWrite = false, failSubmit = false, submitCase) {
     const stages = []
+    const cleaned = []
     const intents = []
     const row = { id: 'file', platform_name: 'alice_oaid_task_1', file_type: 'oaid', stage: ({ create: 'uploaded', analyse: 'created', download: 'analysed' })[step] }
     const taskStore = { enabled: () => true, pending: async () => [row],
       beginOperation: async (_root, name, kind) => { intents.push(kind) }, close: async () => {} }
     const fakePage = { on() {}, pages: () => [fakePage], bringToFront: async () => {}, goto: async () => {}, waitForTimeout: async () => {}, url: () => 'https://test/' }
+    if (submitCase) {
+      const submit = { last() { return this }, isVisible: async () => true,
+        waitFor: async () => {}, isEnabled: async () => true, click: async () => {} }
+      fakePage.getByRole = () => submit
+      fakePage.locator = () => ({ allInnerTexts: async () => [] })
+      fakePage.url = () => 'https://test/insight/insight'
+      fakePage.waitForResponse = async () => submitCase.respond === false ? null : {
+        ok: () => submitCase.http !== false,
+        json: async () => submitCase.body,
+      }
+    }
     const realName = require.resolve(`@ruyi/automation/${filename}`)
     const realRequire = createRequire(realName)
     const manifest = { requireMapping: async () => ({ id: row.id, type: 'oaid' }), resolveFileType: async () => 'oaid',
@@ -114,6 +126,10 @@ async function main() {
         if (name === './lib/browser') return { launchBrowser: async () => ({ pages: () => [fakePage] }), closeBrowserContext: async () => {} }
         if (name === './lib/login') return { navigateWithLogin: async () => fakePage }
         if (name === './lib/file-manifest') return manifest
+        if (name === './lib/task-audience-cleanup') return { cleanupTaskAudiences: async ({ fileId }) => {
+          assert.deepEqual(stages, ['analysed'], '数据库确认洞悉阶段之后才允许清理')
+          cleaned.push(fileId)
+        } }
         if (name === './lib/files') return { readJsonArray() { assert.fail('业务流程不能读JSON') }, writeJsonArray() { assert.fail('业务流程不能写JSON') } }
         return realRequire(name)
       } }
@@ -121,19 +137,35 @@ async function main() {
     const substitutes = step === 'create'
       ? 'selectAudienceFile = async () => {}; fillGroupInfo = async () => {}; submitGroup = async () => {};'
       : step === 'analyse'
-        ? 'monitorPage = () => {}; selectAudience = async () => {}; fillTaskName = async () => {}; selectInsightFilters = async () => {}; submitInsight = async () => {};'
+        ? `monitorPage = () => {}; selectAudience = async () => {}; fillTaskName = async () => {}; selectInsightFilters = async () => {}; ${submitCase ? '' : `submitInsight = async () => { ${failSubmit ? 'throw Object.assign(new Error("洞悉提交未确认"), { code: "SUBMIT_UNCERTAIN" });' : ''} };`}`
         : 'selectTask = async () => "alice_oaid_task_1"; ensureTaskReady = async () => {}; clickDownload = async () => { await saveDownloadedFile("root", "alice_oaid_task_1", "result.xlsx", "source"); return true; };'
     vm.runInNewContext(`${source}\n${substitutes}\nmodule.exports = { main };`, context)
-    if (failWrite) await assert.rejects(context.module.exports.main(), { code: 'TASK_DATABASE_ERROR' })
+    const rejectedResponse = submitCase && !submitCase.accepted
+    if (rejectedResponse) await assert.rejects(context.module.exports.main(), { code: submitCase.respond === false ? 'SUBMIT_UNCERTAIN' : 'SUBMIT_FAILED' })
+    else if (failSubmit) await assert.rejects(context.module.exports.main(), { code: 'SUBMIT_UNCERTAIN' })
+    else if (failWrite) await assert.rejects(context.module.exports.main(), { code: 'TASK_DATABASE_ERROR' })
     else await context.module.exports.main()
-    assert.deepEqual(stages, failWrite ? [] : [({ create: 'created', analyse: 'analysed', download: 'downloaded' })[step]])
+    assert.deepEqual(stages, failWrite || failSubmit || rejectedResponse ? [] : [({ create: 'created', analyse: 'analysed', download: 'downloaded' })[step]])
     if (step !== 'download') assert.deepEqual(intents, [step])
+    assert.deepEqual(cleaned, step === 'analyse' && !failWrite && !failSubmit && !rejectedResponse ? ['file'] : [])
   }
   await exerciseScript('createGroup.js', 'create')
   await exerciseScript('analyse.js', 'analyse')
   await exerciseScript('download.js', 'download')
   await exerciseScript('createGroup.js', 'create', true)
   await exerciseScript('analyse.js', 'analyse', true)
+  await exerciseScript('analyse.js', 'analyse', false, true)
+  // 执行真实 submitInsight，通过 main 验证不明确成功时不能推进阶段或自动删除。
+  for (const body of [{ data: {} }, { data: {}, code: '123' }, { success: true, code: '0' },
+    { success: true, ret: '0' }, { success: false, code: 0 }, { success: true, code: 123 },
+    { success: true, ret: 123 }, { code: null }, { ret: null }, {}, null]) {
+    await exerciseScript('analyse.js', 'analyse', false, false, { body })
+  }
+  for (const body of [{ success: true }, { code: 0 }, { ret: 0 }, { success: true, code: 0, ret: 0 }]) {
+    await exerciseScript('analyse.js', 'analyse', false, false, { body, accepted: true })
+  }
+  await exerciseScript('analyse.js', 'analyse', false, false, { body: { success: true }, http: false })
+  await exerciseScript('analyse.js', 'analyse', false, false, { respond: false })
   const savedCalls = []
   const manifestPath = require.resolve('@ruyi/automation/lib/file-manifest')
   const manifestRequire = createRequire(manifestPath)

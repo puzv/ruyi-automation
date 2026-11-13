@@ -75,10 +75,10 @@ async function testStopAndFinish() {
   const db = { updateTable(table) {
     const call = { table, where: [] }; calls.push(call);
     return { set(values) { call.values = values; return this; }, where(...condition) { call.where.push(condition); return this; },
-      async executeTakeFirst() { return { numUpdatedRows: 1n }; } };
+        async executeTakeFirst() { return { numUpdatedRows: 1n }; } };
   } };
   assert.equal(await repo.requestStopTask(db, { id: 'task', userId: 7, version: 3 }), true);
-  assert.equal(calls[0].values.cancel_requested, 1);
+  assert.ok(calls[0].values.cancel_requested, '停止请求应在原子写入中决定是否需要Worker退出');
   for (const condition of [['id', '=', 'task'], ['user_id', '=', 7], ['status', '=', 'running'], ['cancel_requested', '=', 0], ['version', '=', 3], ['deleted_at', 'is', null]]) {
     assert.ok(calls[0].where.some((candidate) => JSON.stringify(candidate) === JSON.stringify(condition)), `停止请求需校验${condition[0]}`);
   }

@@ -11,6 +11,7 @@ const { navigateWithLogin } = require("./lib/login");
 const { requireMapping, updateStage } = require("./lib/file-manifest");
 const { TASK_OUTCOME } = require("@ruyi/shared/runtime/task-outcome");
 const taskStore = require('@ruyi/shared/runtime/task-file-store');
+const { cleanupTaskAudiences } = require('./lib/task-audience-cleanup');
 
 function withoutExtension(fileName) {
   return path.basename(fileName).replace(/\.(?:txt|csv)$/i, "");
@@ -226,13 +227,13 @@ async function submitInsight(page) {
   const response = await createResponse;
   let responseBody = null;
   if (response) responseBody = await response.json().catch(() => null);
-  const httpOk = !response || typeof response.ok !== "function" || response.ok();
+  const httpOk = Boolean(response && typeof response.ok === "function" && response.ok());
   const responseSucceeded = response && httpOk && responseBody
     && responseBody.success !== false
-    && !(typeof responseBody.code === "number" && responseBody.code !== 0)
-    && !(typeof responseBody.ret === "number" && responseBody.ret !== 0)
+    && (!Object.prototype.hasOwnProperty.call(responseBody, "code") || responseBody.code === 0)
+    && (!Object.prototype.hasOwnProperty.call(responseBody, "ret") || responseBody.ret === 0)
     && (responseBody.success === true || responseBody.code === 0
-      || responseBody.ret === 0 || responseBody.data != null);
+      || responseBody.ret === 0);
   const navigationDeadline = Date.now() + 10000;
   while (
     !page.url().includes("/audience-profile/result")
@@ -278,6 +279,7 @@ async function main() {
     await submitInsight(page);
     if (!dbFile) recordDone(donePath, listPath, fileName);
     await updateStage(uploadRoot, fileName, "analysed");
+    if (dbFile) await cleanupTaskAudiences({ context, fileId: dbFile.id });
   } catch (error) {
     if (error.code === "AUDIENCE_TOO_SMALL") {
       if (dbFile) await updateStage(uploadRoot, fileName, 'empty');

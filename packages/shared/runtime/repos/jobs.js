@@ -27,17 +27,30 @@ async function enqueueJob(db, {
   return result ?? { ok: false, reason: "busy" };
 }
 
-async function enqueueTaskJob(db, { id, taskId, userId, username, task, headless = true, requestId, workerId, claimToken }) {
-  await db.insertInto('ruyi_jobs').values({ id, task_id: taskId, user_id: userId, username, task,
-    headless: headless ? 1 : 0, request_id: requestId ?? null, status: 'running', worker_id: workerId,
-    claim_token: claimToken, started_at: sql`NOW(3)`, heartbeat_at: sql`NOW(3)` }).execute();
-  return getJob(db, id);
+async function enqueueTaskJob(db, { id, taskId, userId, username, task, headless = true, requestId, workerId, claimToken, taskClaimToken }) {
+  const insert = async (conn) => {
+    await conn.insertInto('ruyi_jobs').values({ id, task_id: taskId, user_id: userId, username, task,
+      headless: headless ? 1 : 0, request_id: requestId ?? null, status: 'running', worker_id: workerId,
+      claim_token: claimToken, started_at: sql`NOW(3)`, heartbeat_at: sql`NOW(3)` }).execute();
+    return getJob(conn, id);
+  };
+  if (!taskClaimToken) return null;
+  return withClaimLock(db, (conn) => conn.transaction().execute(async (trx) => {
+    const owner = await trx.selectFrom('ruyi_tasks').select('id').where('id', '=', taskId)
+      .where('user_id', '=', userId).where('status', '=', 'running').where('claim_token', '=', taskClaimToken)
+      .where('worker_id', '=', workerId).where('current_step', '=', task).where('cancel_requested', '=', 0)
+      .where('deleted_at', 'is', null).forUpdate().executeTakeFirst();
+    if (!owner) return null;
+    const active = await trx.selectFrom('ruyi_jobs').select('id').where('task_id', '=', taskId)
+      .where('status', 'in', ['running', 'queued']).executeTakeFirst();
+    return active ? null : insert(trx);
+  }));
 }
 
 async function claimNextJob(db, { workerId, claimToken, maxConcurrent = 2 }) {
   return withClaimLock(db, async (conn) => {
     const taskCount = await conn.selectFrom('ruyi_tasks').select(({ fn }) => fn.countAll().as('n'))
-      .where('status', '=', 'running').where('deleted_at', 'is', null).executeTakeFirstOrThrow();
+      .where('status', '=', 'running').where('claim_token', 'is not', null).where('deleted_at', 'is', null).executeTakeFirstOrThrow();
     const legacyCount = await conn.selectFrom('ruyi_jobs').select(({ fn }) => fn.countAll().as('n'))
       .where('status', '=', 'running').where('task_id', 'is', null).executeTakeFirstOrThrow();
     if (Number(taskCount.n) + Number(legacyCount.n) >= maxConcurrent) return null;

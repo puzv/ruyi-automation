@@ -8,6 +8,7 @@ const { readJsonArray } = require("./lib/files");
 const { checkPreflight } = require("./lib/preflight");
 const { TASK_OUTCOME } = require("@ruyi/shared/runtime/task-outcome");
 const taskStore = require('@ruyi/shared/runtime/task-file-store');
+const { cleanupTaskAudiences } = require('./lib/task-audience-cleanup');
 const { withoutExtension } = require("@ruyi/shared/runtime/workspace");
 
 function getPending(uploadRoot) {
@@ -43,7 +44,11 @@ function runAnalyse() {
 }
 
 function main() {
-  if (taskStore.enabled()) return taskStore.runAll('analyse', require.resolve('./analyse.js'));
+  if (taskStore.enabled()) return (async () => {
+    await cleanupTaskAudiences();
+    try { return await taskStore.runAll('analyse', require.resolve('./analyse.js')); }
+    finally { await cleanupTaskAudiences(); }
+  })();
   checkPreflight({ taskFiles: ["analyseToDoList.json", "done.json"] });
   const uploadRoot = requireUploadRoot();
 

@@ -17,13 +17,25 @@ async function until(check, message) {
 function fixture(rows) {
   const records = [], tasks = rows.map((row, i) => ({ id: `task-${i}`, user_id: i + 1, username: `user_${i}`, status: 'queued', current_step: 'upload', ...row }))
   const repository = {
+    async requestStopTask(_db, { id }) {
+      const task = tasks.find((t) => t.id === id)
+      if (task.status !== 'running') return false
+      if (!task.claim_token && task.next_check_at) Object.assign(task, { status: 'interrupted', next_check_at: null, cancel_requested: 0 })
+      else task.cancel_requested = 1
+      return true
+    },
     async setTaskNextCheck(_db, args) { const task = tasks.find((t) => t.id === args.id); task.next_check_at = args.nextCheckAt; return true },
+    async releaseTaskForPlatformWait(_db, args) {
+      const task = tasks.find((t) => t.id === args.id)
+      if (task.claim_token !== args.claimToken || task.status !== 'running' || task.cancel_requested) return false
+      Object.assign(task, { next_check_at: args.nextCheckAt, claim_token: null, worker_id: null, heartbeat_at: null }); return true
+    },
     async recoverStaleTasks() { return [] }, async heartbeatTasks() {},
     async claimNextTask(_db, options) {
-      if (tasks.filter((t) => t.status === 'running').length >= options.maxConcurrent) return null
-      const task = tasks.find((t) => t.status === 'queued' && !tasks.some((r) => r.user_id === t.user_id && ['running', 'waiting_login'].includes(r.status)))
+      if (tasks.filter((t) => t.status === 'running' && t.claim_token).length >= options.maxConcurrent) return null
+      const task = tasks.find((t) => !t.cancel_requested && (t.status === 'queued' || (t.status === 'running' && !t.claim_token && t.next_check_at <= new Date())) && !tasks.some((r) => r.id !== t.id && r.user_id === t.user_id && ['running', 'waiting_login'].includes(r.status)))
       if (!task) return null
-      Object.assign(task, { status: 'running', claim_token: options.claimToken }); return { ...task }
+      Object.assign(task, { status: 'running', claim_token: options.claimToken, next_check_at: null }); return { ...task }
     },
     async getTaskForUser(_db, id) { return { ...tasks.find((t) => t.id === id) } },
     async updateTaskStep(_db, args) { const t = tasks.find((t) => t.id === args.id); if (t.claim_token !== args.claimToken || t.status !== 'running') return false; t.current_step = args.currentStep; return true },
@@ -41,6 +53,73 @@ function fixture(rows) {
 }
 
 async function main() {
+  {
+    const f = fixture([{ user_id: 1 }, { user_id: 2 }, { user_id: 3 }, { user_id: 1 }])
+    const attempts = new Map(), leases = [], activeUsers = new Set()
+    let active = 0, maxActive = 0
+    const worker = createWorker({ ...f.options, retryMs: 60000, runner: async ({ job }) => {
+      assert.equal(activeUsers.has(job.user_id), false, '同一用户不得并行执行')
+      activeUsers.add(job.user_id); active++; maxActive = Math.max(active, maxActive)
+      await pause(2)
+      active--; activeUsers.delete(job.user_id)
+      if (job.task_id === 'task-0' && job.task === 'upload') leases.push(job.task_claim_token)
+      const count = attempts.get(job.task_id) || 0; attempts.set(job.task_id, count + 1)
+      if (['task-0', 'task-1'].includes(job.task_id) && count === 0) return { status: 'failed', outcome: 'not_ready' }
+      return { status: 'succeeded' }
+    } })
+    try {
+      await worker.start()
+      await until(() => f.tasks[2].status === 'succeeded', '前两用户等待时第三用户必须获得执行名额')
+      assert.equal(f.tasks[0].status, 'running'); assert.equal(f.tasks[0].claim_token, null)
+      assert.equal(f.tasks[3].status, 'queued', '释放全局名额不能释放同用户串行屏障')
+      assert.equal(attempts.get('task-0'), 1, '未到重试时间不可重新执行')
+      for (const task of f.tasks) if (task.next_check_at) task.next_check_at = new Date(0)
+      await until(() => f.tasks.every((t) => t.status === 'succeeded'), '等待到期后应自动认领继续')
+      assert.notEqual(leases[0], leases[1], '每次重新认领必须更换租约')
+      assert.ok(maxActive <= 2)
+    } finally { await worker.stop() }
+  }
+  {
+    const f = fixture([{ user_id: 1 }, { user_id: 2 }, { user_id: 3 }, { user_id: 1 }])
+    const seen = new Set(), activeUsers = new Set()
+    let active = 0, maxActive = 0
+    const runner = async ({ job }) => {
+      assert.equal(activeUsers.has(job.user_id), false)
+      activeUsers.add(job.user_id); active++; maxActive = Math.max(maxActive, active)
+      await pause(2)
+      active--; activeUsers.delete(job.user_id)
+      if (!seen.has(job.task_id)) { seen.add(job.task_id); return { status: 'failed', outcome: 'not_ready' } }
+      return { status: 'succeeded' }
+    }
+    const workers = ['worker-a', 'worker-b'].map((workerId) => createWorker({ ...f.options, workerId, retryMs: 60000, runner }))
+    try {
+      await Promise.all(workers.map((worker) => worker.start()))
+      await until(() => f.tasks.slice(0, 3).every((task) => task.next_check_at), '多Worker应释放全部等待任务')
+      assert.equal(f.tasks[3].status, 'queued')
+      for (const task of f.tasks) if (task.next_check_at) task.next_check_at = new Date(0)
+      await until(() => f.tasks.slice(0, 3).every((task) => task.status === 'succeeded') && f.tasks[3].next_check_at, '到期任务应被唯一重新认领')
+      f.tasks[3].next_check_at = new Date(0)
+      await until(() => f.tasks.every((task) => task.status === 'succeeded'), '多Worker应继续全部任务')
+      assert.ok(maxActive <= 2, '多个Worker共享全局执行上限')
+      for (const task of f.tasks) assert.equal(f.records.filter((job) => job.task_id === task.id && job.task === 'upload').length, 2)
+    } finally { await Promise.all(workers.map((worker) => worker.stop())) }
+  }
+  {
+    const f = fixture([{}])
+    const first = createWorker({ ...f.options, retryMs: 60000, runner: async () => ({ status: 'failed', outcome: 'not_ready' }) })
+    await first.start()
+    await until(() => f.tasks[0].next_check_at, '应保存持久等待')
+    await first.stop()
+    assert.equal(f.tasks[0].claim_token, null)
+    const second = createWorker({ ...f.options, workerId: 'after-restart', runner: async () => ({ status: 'succeeded' }) })
+    try {
+      await second.start()
+      assert.equal(f.records.length, 1, '服务重启不能提前检查未到期任务')
+      f.tasks[0].next_check_at = new Date(0)
+      await until(() => f.tasks[0].status === 'succeeded', '重启后应到期自动恢复当前流程')
+      assert.equal(f.records.filter((job) => job.task === 'upload').length, 2)
+    } finally { await second.stop() }
+  }
   {
     const f = fixture([{}])
     const options = { ...f.options }
@@ -151,15 +230,16 @@ async function main() {
   }
   {
     const f = fixture([{}]); const worker = createWorker({ ...f.options, retryMs: 60000, runner: async () => ({ status: 'failed', outcome: 'not_ready' }) })
-    await worker.start(); await until(() => f.records.length === 1 && f.records[0].status === 'failed', '应等待重试')
-    f.tasks[0].cancel_requested = 1
+    await worker.start(); await until(() => f.tasks[0].next_check_at instanceof Date, '应等待重试')
+    await f.options.taskRepository.requestStopTask(null, { id: f.tasks[0].id })
     await until(() => f.tasks[0].status === 'interrupted', '等待平台期间应及时停止，不必等60秒重试'); await worker.stop()
     assert.equal(f.records.length, 1)
   }
   {
     const f = fixture([{}]); const worker = createWorker({ ...f.options, retryMs: 60000, runner: async () => ({ status: 'failed', outcome: 'not_ready' }) })
-    await worker.start(); await until(() => f.records[0]?.status === 'failed', '应等待重试'); await worker.stop()
-    assert.equal(f.tasks[0].status, 'interrupted', '停止不能让整任务永久running')
+    await worker.start(); await until(() => f.tasks[0].next_check_at instanceof Date, '应等待重试'); await worker.stop()
+    assert.equal(f.tasks[0].status, 'running', '服务停止应保留持久平台等待，重启后自动检查')
+    assert.equal(f.tasks[0].claim_token, null)
   }
   {
     const f = fixture([{}]); const worker = createWorker({ ...f.options, runner: async ({ job }) => {

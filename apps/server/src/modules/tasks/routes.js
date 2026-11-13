@@ -146,8 +146,12 @@ async function registerTaskRoutes(api, { dataRoot, canImportFiles }) {
     if (!await tasks.requestStopTask(api.db, { id: row.id, userId: req.user.id, version })) {
       return reply.code(409).send({ ok: false, code: 'TASK_STOP_CONFLICT', message: '任务状态已变化，请刷新后重试' });
     }
-    req.auditTask = { id: row.id, status: 'cancelling' };
-    return { ok: true, status: 'cancelling', message: '正在停止任务，停止后将标记为已中断，可继续任务' };
+    const latest = await own(req);
+    const interrupted = latest?.status === 'interrupted';
+    api.worker?.wake();
+    req.auditTask = { id: row.id, status: interrupted ? 'interrupted' : 'cancelling' };
+    return { ok: true, status: interrupted ? 'interrupted' : 'cancelling', message: interrupted
+      ? '任务已中断，可继续任务' : '正在停止任务，停止后将标记为已中断，可继续任务' };
   }));
   api.post('/api/tasks/:id/continue', handle(async (req, reply) => {
     const row = await own(req);

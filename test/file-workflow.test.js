@@ -78,7 +78,7 @@ function audiencePage(fileName, scenario, calls) {
   };
   return {
     on() {}, waitForTimeout: async () => {}, url: () => config.urls.result,
-    waitForResponse: async () => ({ json: async () => ({ success: true }) }),
+    waitForResponse: async () => ({ ok: () => true, json: async () => ({ success: true }) }),
     getByText: () => control,
     getByRole: () => ({ ...control, click: async () => { calls.submissions += 1; } }),
     locator: (selector) => selector === 'ul.selection-results:visible li.selection-info'

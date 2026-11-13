@@ -9,7 +9,7 @@
     "analyse": "node packages/automation/analyseAll.js",
     "download": "node packages/automation/downloadAll.js",
     "test:pn": "node test/pn-flow.test.js",
-    "test:db-state": "node test/task-database-state.test.js && node test/automation-db-state.test.js && node test/db-job-results.test.js && node test/backfill-task-results.test.js",
+    "test:db-state": "node test/task-database-state.test.js && node test/automation-db-state.test.js && node test/db-job-results.test.js && node test/backfill-task-results.test.js && node test/audience-cleanup.test.js && node test/audience-cleanup-integration.test.js && node test/task-waiting-slot-sql.test.js",
     "browser:split": "node scripts/split-playwright-browsers.js",
     "browser:install": "node scripts/install-playwright-browser.js",
     "test": "node --check packages/shared/config.js && node --check packages/automation/createAllGroup.js && node --check packages/shared/playwright-env.js && node --check packages/shared/macos-arch.js && node --check scripts/split-playwright-browsers.js && node --check scripts/install-playwright-browser.js && node test/macos-arch.test.js && node test/migration-guard.test.js && node test/db-env.test.js && node test/server-app.test.js && node test/server-routes.test.js && node test/frontend-platform-login.test.js && node test/platform-login-qr.test.js && node test/platform-login-routes.test.js && node test/frontend-registration.test.js && node test/api-tokens-guard.test.js && node test/frontend-api-tokens.test.js && node test/frontend-labels.test.js && node test/audit-group-pagination.test.js && npm run test:phase3 && npm run test:db-state && node test/workspace-layout.test.js && node test/mcp-tools.test.js && node test/transfer.test.js && node test/skill.test.js",

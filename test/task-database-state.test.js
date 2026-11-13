@@ -76,6 +76,33 @@ async function main() {
   await repo.prepareMappings(old.db, old.ctx, { username: 'alice' })
   assert.ok(old.file.platform_name, '登录检查前退出且无平台副作用允许恢复初始化')
   await assert.rejects(repo.listFiles({ transaction() { throw Error('sensitive db detail') } }, f.ctx), /无法保存或读取/)
+  const cleanup = fixture()
+  cleanup.task.current_step = cleanup.job.task = 'analyse'
+  Object.assign(cleanup.file, { stage: 'analysed', platform_name: 'alice_oaid_task_1', pending_operation: null, audience_deleted_at: null })
+  assert.equal((await repo.cleanupCandidates(cleanup.db, cleanup.ctx)).length, 0, '不追溯自动删除历史洞悉人群')
+  cleanup.file.stage = 'created'
+  await repo.transitionFile(cleanup.db, cleanup.ctx, { fileId: cleanup.file.id, fromStages: ['created'], toStage: 'analysed' })
+  assert.equal(cleanup.file.audience_cleanup_pending, 1, '清理资格与洞悉成功阶段同事务写入')
+  assert.equal((await repo.cleanupCandidates(cleanup.db, cleanup.ctx)).length, 1)
+  assert.equal((await repo.assertCleanupEligible(cleanup.db, cleanup.ctx, cleanup.file.id)).platform_name, cleanup.file.platform_name)
+  await assert.rejects(repo.assertCleanupEligible(cleanup.db, cleanup.ctx, 'other-file'), /不满足/)
+  for (const patch of [{ stage: 'created' }, { excluded_at: new Date() }, { pending_operation: 'analyse' }, { platform_name: 'unsafe/name' }]) {
+    const before = { ...cleanup.file }
+    Object.assign(cleanup.file, patch)
+    assert.equal((await repo.cleanupCandidates(cleanup.db, cleanup.ctx)).length, 0)
+    await assert.rejects(repo.markAudienceDeleted(cleanup.db, cleanup.ctx, cleanup.file.id), /不满足/)
+    Object.assign(cleanup.file, before)
+  }
+  cleanup.task.current_step = cleanup.job.task = 'download'
+  cleanup.file.stage = 'downloaded'
+  await repo.markAudienceDeleted(cleanup.db, cleanup.ctx, cleanup.file.id)
+  assert.ok(cleanup.file.audience_deleted_at instanceof Date)
+  assert.equal(cleanup.file.audience_cleanup_pending, 0)
+  assert.equal((await repo.cleanupCandidates(cleanup.db, cleanup.ctx)).length, 0)
+  await repo.markAudienceDeleted(cleanup.db, cleanup.ctx, cleanup.file.id)
+  await assert.rejects(repo.cleanupCandidates(cleanup.db, { ...cleanup.ctx, taskClaimToken: 'stale' }), /租约/)
+  cleanup.task.current_step = cleanup.job.task = 'create'
+  await assert.rejects(repo.cleanupCandidates(cleanup.db, cleanup.ctx), /不允许/)
   assert.throws(() => repo.validPath('execution/oaid/../../escape.txt'), /路径无效/)
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ruyi-db-execution-')), execution = path.join(root, 'execution')
   fs.mkdirSync(path.join(root, 'raw')); fs.mkdirSync(execution)

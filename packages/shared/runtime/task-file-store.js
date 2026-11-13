@@ -89,4 +89,8 @@ async function runAll(step, script, spawn = require('node:child_process').spawnS
   }
   return (await pending(step)).length ? TASK_OUTCOME.NOT_READY : TASK_OUTCOME.SUCCESS
 }
-module.exports = { enabled, context, db, close, mapping, files, pending, requireMapping, updateStage, beginOperation, candidates, runAll }
+const cleanupCandidates = () => repo.cleanupCandidates(db(), context())
+const assertCleanupEligible = (fileId) => repo.assertCleanupEligible(db(), context(), fileId)
+const markAudienceDeleted = (fileId) => repo.markAudienceDeleted(db(), context(), fileId)
+module.exports = { enabled, context, db, close, mapping, files, pending, requireMapping, updateStage, beginOperation,
+  candidates, runAll, cleanupCandidates, assertCleanupEligible, markAudienceDeleted }

@@ -105,13 +105,20 @@ function createWorker({ db, keys, log, dataRoot, workerId = `${os.hostname()}:${
         if (!current || current.status !== 'running' || current.claim_token !== task.claim_token) return
         if (stopping) { await finish('interrupted', '服务停止，任务已中断'); return }
         if (current.cancel_requested) { await finish('interrupted', '用户停止，任务已中断，可继续任务'); return }
-        await tasks.setTaskNextCheck(db, { id: task.id, claimToken: task.claim_token, nextCheckAt: null })
         const job = await jobRepo.enqueueTaskJob(db, { id: randomUUID(), taskId: task.id,
           userId: task.user_id, username: task.username, task: current.current_step,
-          headless: true, workerId, claimToken: randomUUID() })
+          headless: true, workerId, claimToken: randomUUID(), taskClaimToken: task.claim_token })
+        if (!job) {
+          const latest = await tasks.getTaskForUser(db, task.id, task.user_id)
+          if (latest?.claim_token === task.claim_token && latest.status === 'running') {
+            await finish(latest.cancel_requested ? 'interrupted' : 'failed', latest.cancel_requested
+              ? '用户停止，任务已中断，可继续任务' : '流程认领失败，任务已停止')
+          }
+          return
+        }
         // 子进程读写逐文件状态时必须同时证明整任务和子流程的当前租约。
         job.task_claim_token = task.claim_token
-        let retry = false, advance = false
+        let parked = false, advance = false
         await launch(job, async (result) => {
           const latest = await tasks.getTaskForUser(db, task.id, task.user_id)
           if (latest?.cancel_requested && result.status !== 'interrupted') {
@@ -127,23 +134,15 @@ function createWorker({ db, keys, log, dataRoot, workerId = `${os.hostname()}:${
               }
             }
           } else if (result.outcome === 'not_ready') {
-            retry = await tasks.setTaskNextCheck(db, { id: task.id, claimToken: task.claim_token, nextCheckAt: new Date(Date.now() + retryMs) })
+            parked = await tasks.releaseTaskForPlatformWait(db, { id: task.id, claimToken: task.claim_token, nextCheckAt: new Date(Date.now() + retryMs) })
           } else if (result.status === 'succeeded') {
             const next = { upload: 'create', create: 'analyse', analyse: 'download', download: null }[current.current_step]
             if (next) advance = await tasks.updateTaskStep(db, { id: task.id, claimToken: task.claim_token, currentStep: next })
             else await finish('succeeded')
           } else await finish('failed', result.errorMessage)
         })
-        if (retry) {
-          // 平台异步处理中仍持有整任务租约，保留同用户串行次序并避免热循环。
-          await new Promise((resolve) => {
-            const done = () => { clearTimeout(timer); controller.signal.removeEventListener('abort', done); resolve() }
-            const timer = setTimeout(done, retryMs)
-            controller.signal.addEventListener('abort', done, { once: true })
-            if (controller.signal.aborted) done()
-          })
-          continue
-        }
+        // 等待是数据库中的持久状态，不再占据 Worker 执行集合或保持浏览器。
+        if (parked) return
         if (!advance) {
           const latest = await tasks.getTaskForUser(db, task.id, task.user_id)
           if (latest?.status === 'running' && latest.claim_token === task.claim_token) {

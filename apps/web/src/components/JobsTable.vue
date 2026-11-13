@@ -197,7 +197,8 @@ async function removeTask(task) {
   if (!window.confirm(`确定${stopping ? '停止' : '删除'}“${task.name || task.id}”吗？${message}`)) return
   await mutate(task.id, async () => {
     const data = await requestJson(`/api/tasks/${encodeURIComponent(task.id)}${stopping ? '/stop' : ''}`, { method: stopping ? 'POST' : 'DELETE', body: { version: task.version } })
-    if (!disposed) notice.value = data.status === 'cancelling' ? '停止请求已提交，完成后可继续任务' : '任务已删除'
+    if (!disposed) notice.value = data.status === 'interrupted' ? '任务已中断，可继续任务'
+      : data.status === 'cancelling' ? '停止请求已提交，完成后可继续任务' : '任务已删除'
   })
 }
 async function continueTask(task) {

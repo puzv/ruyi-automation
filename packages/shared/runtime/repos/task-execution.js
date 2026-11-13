@@ -91,6 +91,7 @@ function transitionFile(db, ctx, { fileId, fromStages, toStage, currentPath }) {
     const row = await filesQuery(trx, ctx).where('id', '=', fileId).where('excluded_at', 'is', null).forUpdate().executeTakeFirst()
     if (!row || !fromStages.includes(row.stage) || (row.pending_operation && row.operation_job_id !== ctx.jobId)) throw failure('任务文件存在未确认操作或状态已变化，停止推进')
     const values = { stage: toStage, error_message: null, pending_operation: null, operation_job_id: null, version: sql`version + 1` }
+    if (job.task === 'analyse' && toStage === 'analysed') values.audience_cleanup_pending = 1
     if (currentPath !== undefined) values.current_path = currentPath
     const result = await trx.updateTable('ruyi_task_files').set(values).where('id', '=', fileId).where('task_id', '=', ctx.taskId)
       .where('user_id', '=', ctx.userId).where('excluded_at', 'is', null).where('stage', 'in', fromStages).executeTakeFirst()
@@ -111,4 +112,36 @@ function beginOperation(db, ctx, { fileId, operation }) {
     return row
   })
 }
-module.exports = { listFiles, pendingFiles, assertLease, prepareMappings, transitionFile, beginOperation, PENDING, validPath }
+function cleanupEligible(row) {
+  return Number(row.audience_cleanup_pending) === 1 && !row.excluded_at && !row.audience_deleted_at && !row.pending_operation
+    && ['analysed', 'downloaded'].includes(row.stage)
+    && typeof row.platform_name === 'string' && /^[a-zA-Z0-9_]{1,30}$/.test(row.platform_name)
+}
+function cleanupCandidates(db, ctx) {
+  return leased(db, ctx, async (trx, _task, job) => {
+    if (!['analyse', 'download'].includes(job.task)) throw failure('当前流程不允许清理平台人群')
+    return (await filesQuery(trx, ctx).execute()).filter(cleanupEligible)
+  })
+}
+function assertCleanupEligible(db, ctx, fileId) {
+  return leased(db, ctx, async (trx, _task, job) => {
+    if (!['analyse', 'download'].includes(job.task)) throw failure('当前流程不允许清理平台人群')
+    const row = await filesQuery(trx, ctx).where('id', '=', fileId).forUpdate().executeTakeFirst()
+    if (!row || !cleanupEligible(row)) throw failure('任务文件不满足平台人群清理条件，停止删除')
+    return row
+  })
+}
+function markAudienceDeleted(db, ctx, fileId) {
+  return leased(db, ctx, async (trx, _task, job) => {
+    if (!['analyse', 'download'].includes(job.task)) throw failure('当前流程不允许清理平台人群')
+    const row = await filesQuery(trx, ctx).where('id', '=', fileId).forUpdate().executeTakeFirst()
+    if (row?.audience_deleted_at) return row
+    if (!row || !cleanupEligible(row)) throw failure('任务文件不满足平台人群清理条件，停止记录')
+    await trx.updateTable('ruyi_task_files').set({ audience_deleted_at: new Date(), audience_cleanup_pending: 0, version: sql`version + 1` })
+      .where('id', '=', fileId).where('task_id', '=', ctx.taskId).where('user_id', '=', ctx.userId)
+      .where('excluded_at', 'is', null).where('audience_deleted_at', 'is', null).executeTakeFirst()
+    return filesQuery(trx, ctx).where('id', '=', fileId).executeTakeFirstOrThrow()
+  })
+}
+module.exports = { listFiles, pendingFiles, assertLease, prepareMappings, transitionFile, beginOperation,
+  cleanupCandidates, assertCleanupEligible, markAudienceDeleted, PENDING, validPath }

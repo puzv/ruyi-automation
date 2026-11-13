@@ -65,20 +65,30 @@ async function claimNextTask(db, { workerId, claimToken, maxConcurrent = 2 }) {
     const lock = await sql`SELECT GET_LOCK('ruyi_job_claim', 5) AS acquired`.execute(conn);
     if (Number(lock.rows[0].acquired) !== 1) return null;
     try {
-      const active = await conn.selectFrom('ruyi_tasks').select(({ fn }) => fn.countAll().as('n')).where('status', '=', 'running').where('deleted_at', 'is', null).executeTakeFirstOrThrow();
+      const active = await conn.selectFrom('ruyi_tasks').select(({ fn }) => fn.countAll().as('n')).where('status', '=', 'running').where('claim_token', 'is not', null).where('deleted_at', 'is', null).executeTakeFirstOrThrow();
       const legacy = await conn.selectFrom('ruyi_jobs').select(({ fn }) => fn.countAll().as('n')).where('status', '=', 'running').where('task_id', 'is', null).executeTakeFirstOrThrow();
       if (Number(active.n) + Number(legacy.n) >= maxConcurrent) return null;
       const candidate = await conn.selectFrom('ruyi_tasks as t').select('t.id')
-        .where('t.status', '=', 'queued').where('t.deleted_at', 'is', null).where('t.cancel_requested', '=', 0)
+        .where((eb) => eb.or([
+          eb('t.status', '=', 'queued'),
+          eb.and([eb('t.status', '=', 'running'), eb('t.claim_token', 'is', null),
+            eb('t.worker_id', 'is', null), eb('t.heartbeat_at', 'is', null), eb('t.next_check_at', '<=', sql`NOW(3)`)]),
+        ])).where('t.deleted_at', 'is', null).where('t.cancel_requested', '=', 0)
         .where(({ not, exists, selectFrom }) => not(exists(selectFrom('ruyi_tasks as r').select('r.id')
-          .whereRef('r.user_id', '=', 't.user_id').where('r.deleted_at', 'is', null).where('r.status', 'in', ['running', 'waiting_login']))))
+          .whereRef('r.user_id', '=', 't.user_id').whereRef('r.id', '!=', 't.id').where('r.deleted_at', 'is', null).where('r.status', 'in', ['running', 'waiting_login']))))
         .where(({ not, exists, selectFrom }) => not(exists(selectFrom('ruyi_jobs as j').select('j.id')
-          .whereRef('j.user_id', '=', 't.user_id').where('j.task_id', 'is', null).where('j.status', 'in', ['running', 'queued']))))
-        .orderBy('t.queued_at').orderBy('t.queue_order').executeTakeFirst();
+          .whereRef('j.user_id', '=', 't.user_id').where('j.status', 'in', ['running', 'queued'])
+          .where((eb) => eb.or([eb('j.task_id', 'is', null), eb('j.task_id', '=', eb.ref('t.id'))])))))
+        // 等待轮次按到期时间重新参与调度，不能凭最初创建时间反复抢占新任务。
+        .orderBy(sql`CASE WHEN t.status = 'running' THEN t.next_check_at ELSE t.queued_at END`)
+        .orderBy('t.queue_order').executeTakeFirst();
       if (!candidate) return null;
       const result = await conn.updateTable('ruyi_tasks').set({ status: 'running', claim_token: claimToken,
-        worker_id: workerId, started_at: sql`COALESCE(started_at, NOW(3))`, heartbeat_at: sql`NOW(3)`, version: sql`version + 1` })
-        .where('id', '=', candidate.id).where('status', '=', 'queued').where('deleted_at', 'is', null).where('cancel_requested', '=', 0).executeTakeFirst();
+        worker_id: workerId, started_at: sql`COALESCE(started_at, NOW(3))`, heartbeat_at: sql`NOW(3)`, next_check_at: null, version: sql`version + 1` })
+        .where('id', '=', candidate.id).where((eb) => eb.or([
+          eb('status', '=', 'queued'), eb.and([eb('status', '=', 'running'), eb('claim_token', 'is', null),
+            eb('worker_id', 'is', null), eb('heartbeat_at', 'is', null), eb('next_check_at', '<=', sql`NOW(3)`)]),
+        ])).where('deleted_at', 'is', null).where('cancel_requested', '=', 0).executeTakeFirst();
       if (Number(result.numUpdatedRows) !== 1) return null;
       return conn.selectFrom('ruyi_tasks as t').innerJoin('ruyi_users as u', 'u.id', 't.user_id')
         .selectAll('t').select('u.username').where('t.id', '=', candidate.id).executeTakeFirst();
@@ -87,7 +97,15 @@ async function claimNextTask(db, { workerId, claimToken, maxConcurrent = 2 }) {
 }
 
 async function requestStopTask(db, { id, userId, version }) {
-  let query = db.updateTable('ruyi_tasks').set({ cancel_requested: 1, version: sql`version + 1` })
+  const waiting = sql`claim_token IS NULL AND worker_id IS NULL AND heartbeat_at IS NULL AND next_check_at IS NOT NULL`;
+  // 同一次 UPDATE 判定是否已释放，避免释放租约恰好发生在两次停止写入之间。
+  // next_check_at 最后赋值，MySQL 5.7 从左到右求值时所有 CASE 看到相同的等待条件。
+  let query = db.updateTable('ruyi_tasks').set({
+    status: sql`CASE WHEN ${waiting} THEN 'interrupted' ELSE status END`,
+    cancel_requested: sql`CASE WHEN ${waiting} THEN 0 ELSE 1 END`,
+    finished_at: sql`CASE WHEN ${waiting} THEN NOW(3) ELSE finished_at END`,
+    error_message: sql`CASE WHEN ${waiting} THEN '用户停止，任务已中断，可继续任务' ELSE error_message END`,
+    next_check_at: sql`CASE WHEN ${waiting} THEN NULL ELSE next_check_at END`, version: sql`version + 1` })
     .where('id', '=', id).where('user_id', '=', userId).where('deleted_at', 'is', null)
     .where('status', '=', 'running').where('cancel_requested', '=', 0);
   if (version !== undefined) query = query.where('version', '=', version);
@@ -98,8 +116,9 @@ async function requestStopTask(db, { id, userId, version }) {
 async function requestCancelTask(db, { id, userId }) {
   const q = await db.updateTable('ruyi_tasks').set({ status: 'cancelled', finished_at: sql`NOW(3)` }).where('id', '=', id).where('user_id', '=', userId).where('status', '=', 'queued').executeTakeFirst();
   if (Number(q.numUpdatedRows) === 1) return 'cancelled';
-  const r = await db.updateTable('ruyi_tasks').set({ cancel_requested: 1 }).where('id', '=', id).where('user_id', '=', userId).where('status', '=', 'running').executeTakeFirst();
-  return Number(r.numUpdatedRows) === 1 ? 'cancelling' : null;
+  if (!await requestStopTask(db, { id, userId })) return null;
+  const task = await getTaskForUser(db, id, userId);
+  return task?.status === 'interrupted' ? 'interrupted' : 'cancelling';
 }
 
 async function updateTaskStep(db, { id, claimToken, currentStep, status = 'running' }) {
@@ -208,7 +227,7 @@ async function continueInterruptedTask(db, { id, userId, version }) {
 function heartbeatTasks(db, { workerId, taskIds }) {
   if (Array.isArray(taskIds) && !taskIds.length) return Promise.resolve({ numUpdatedRows: 0n });
   let query = db.updateTable('ruyi_tasks').set({ heartbeat_at: sql`NOW(3)` })
-    .where('worker_id', '=', workerId).where('status', '=', 'running');
+    .where('worker_id', '=', workerId).where('status', '=', 'running').where('claim_token', 'is not', null);
   if (Array.isArray(taskIds)) query = query.where('id', 'in', taskIds);
   return query.executeTakeFirst();
 }
@@ -217,6 +236,30 @@ async function setTaskNextCheck(db, { id, claimToken, nextCheckAt }) {
   const result = await db.updateTable('ruyi_tasks').set({ next_check_at: nextCheckAt ?? null })
     .where('id', '=', id).where('claim_token', '=', claimToken).where('status', '=', 'running').where('cancel_requested', '=', 0).executeTakeFirst();
   return Number(result.numUpdatedRows) === 1;
+}
+
+async function releaseTaskForPlatformWait(db, { id, claimToken, nextCheckAt }) {
+  if (!claimToken || !(nextCheckAt instanceof Date) || !Number.isFinite(nextCheckAt.getTime())) return false;
+  return db.connection().execute(async (conn) => {
+    const lock = await sql`SELECT GET_LOCK('ruyi_job_claim', 5) AS acquired`.execute(conn);
+    if (Number(lock.rows[0].acquired) !== 1) return false;
+    try {
+      return await conn.transaction().execute(async (trx) => {
+        const task = await trx.selectFrom('ruyi_tasks').select('id').where('id', '=', id)
+          .where('status', '=', 'running').where('claim_token', '=', claimToken)
+          .where('cancel_requested', '=', 0).where('deleted_at', 'is', null).forUpdate().executeTakeFirst();
+        if (!task) return false;
+        const active = await trx.selectFrom('ruyi_jobs').select('id').where('task_id', '=', id)
+          .where('status', 'in', ['running', 'queued']).executeTakeFirst();
+        if (active) return false;
+        const result = await trx.updateTable('ruyi_tasks').set({ next_check_at: nextCheckAt,
+          claim_token: null, worker_id: null, heartbeat_at: null, version: sql`version + 1` })
+          .where('id', '=', id).where('status', '=', 'running').where('claim_token', '=', claimToken)
+          .where('cancel_requested', '=', 0).executeTakeFirst();
+        return Number(result.numUpdatedRows) === 1;
+      });
+    } finally { await sql`SELECT RELEASE_LOCK('ruyi_job_claim')`.execute(conn); }
+  });
 }
 
 async function syncTaskFiles(db, { taskId, userId, files }) {
@@ -236,7 +279,7 @@ async function syncTaskFiles(db, { taskId, userId, files }) {
 async function recoverStaleTasks(db, { staleSeconds = 60 } = {}) {
   const stale = sql`DATE_SUB(NOW(3), INTERVAL ${staleSeconds} SECOND)`;
   return db.transaction().execute(async (trx) => {
-    const rows = await trx.selectFrom('ruyi_tasks').selectAll().where('status', '=', 'running').where('heartbeat_at', '<', stale).forUpdate().execute();
+    const rows = await trx.selectFrom('ruyi_tasks').selectAll().where('status', '=', 'running').where('claim_token', 'is not', null).where('heartbeat_at', '<', stale).forUpdate().execute();
     if (rows.length) await trx.updateTable('ruyi_tasks').set({ status: 'interrupted', error_message: '服务重启或异常退出，任务已中断', finished_at: sql`NOW(3)`,
       cancel_requested: 0, claim_token: null, worker_id: null, heartbeat_at: null, next_check_at: null, version: sql`version + 1` }).where('id', 'in', rows.map((r) => r.id)).execute();
     return rows;
@@ -281,6 +324,12 @@ async function deleteTask(db, { id, userId, version }) {
     if (!task) return { ok: false, reason: 'not_found' };
     if (version !== undefined && Number(task.version) !== version) return { ok: false, reason: 'version', task };
     if (task.status === 'running') {
+      if (!task.claim_token && !task.worker_id && !task.heartbeat_at && task.next_check_at) {
+        const result = await trx.updateTable('ruyi_tasks').set({ status: 'interrupted', cancel_requested: 0,
+          finished_at: sql`NOW(3)`, next_check_at: null, error_message: '用户停止，任务已中断，可继续任务', version: sql`version + 1` })
+          .where('id', '=', id).where('user_id', '=', userId).where('status', '=', 'running').where('version', '=', task.version).executeTakeFirst();
+        return Number(result.numUpdatedRows) === 1 ? { ok: true, status: 'interrupted', task } : { ok: false, reason: 'conflict', task };
+      }
       const result = await trx.updateTable('ruyi_tasks').set({ cancel_requested: 1, version: sql`version + 1` }).where('id', '=', id).where('user_id', '=', userId).where('status', '=', 'running').where('version', '=', task.version).executeTakeFirst();
       return Number(result.numUpdatedRows) === 1 ? { ok: true, status: 'cancelling', task } : { ok: false, reason: 'conflict', task };
     }
@@ -290,5 +339,5 @@ async function deleteTask(db, { id, userId, version }) {
 }
 
 module.exports = { createTask, getTaskForUser, listTasks, listTasksAdmin, getTaskAdmin, listTaskFilesAdmin, listTaskJobsAdmin, listTaskFiles, listTaskJobs, renameTask, excludeTaskFile, deleteTask,
-  claimNextTask, updateTaskStep, finishTask, heartbeatTasks, setTaskNextCheck, syncTaskFiles, recoverStaleTasks, requestCancelTask, requestStopTask,
+  claimNextTask, updateTaskStep, finishTask, heartbeatTasks, setTaskNextCheck, releaseTaskForPlatformWait, syncTaskFiles, recoverStaleTasks, requestCancelTask, requestStopTask,
   markUserWaitingLogin, resumeUserWaitingLogin, continueInterruptedTask };

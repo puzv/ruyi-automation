@@ -9,6 +9,7 @@ const { readJsonArray } = require("./lib/files");
 const { checkPreflight, waitForProfileRelease } = require("./lib/preflight");
 const { TASK_OUTCOME } = require("@ruyi/shared/runtime/task-outcome");
 const taskStore = require('@ruyi/shared/runtime/task-file-store');
+const { cleanupTaskAudiences } = require('./lib/task-audience-cleanup');
 
 const readDone = (donePath) => readJsonArray(donePath, "完成清单").filter((name) => typeof name === "string");
 
@@ -34,7 +35,13 @@ function runDownload() {
 
 function main({ spawnDownload = runDownload, root, donePath: donePathOption, log = console.log,
   preflight = true } = {}) {
-  if (taskStore.enabled()) return taskStore.runAll('download', require.resolve('./download.js')).then((code) => ({ ok: code === TASK_OUTCOME.SUCCESS, code }));
+  if (taskStore.enabled()) return (async () => {
+    await cleanupTaskAudiences();
+    try {
+      const code = await taskStore.runAll('download', require.resolve('./download.js'));
+      return { ok: code === TASK_OUTCOME.SUCCESS, code };
+    } finally { await cleanupTaskAudiences(); }
+  })();
   // 测试只关心结束判定，允许跳过依赖真实 profile 与浏览器目录的启动前检查。
   if (preflight) checkPreflight({ taskFiles: ["done.json"] });
   const uploadRoot = root || requireUploadRoot();

@@ -71,7 +71,7 @@ const fallback = { ok: true, status: 'valid' };
 
 async function testTaskPanel(labels) {
   const names = ['items', 'page', 'pages', 'files', 'jobs', 'filters', 'form', 'showCreate', 'platformStatus', 'error', 'notice', 'busy', 'expanded', 'load', 'toggleTask', 'openCreate', 'chooseFiles', 'chooseFolder', 'selectedSummary', 'createTask', 'removeFile', 'removeTask', 'resume', 'continueTask', 'download', 'stepStatus', 'statusLabel', 'presentJob'];
-  let status = 'queued', platform = 'valid', fail = false, createError = false;
+  let status = 'queued', platform = 'valid', fail = false, createError = false, immediateStop = false;
   const bodies = [];
   const task = () => ({ id: 'task-1', name: '测试任务', status, currentStep: 'upload', version: 3 });
   const file = { id: 'file-1', originalName: '测试oaid.txt', excludedAt: null, sizeBytes: 5 };
@@ -81,7 +81,7 @@ async function testTaskPanel(labels) {
     if (url === '/api/platform-state') return { ok: true, status: platform };
     if (method === 'DELETE') { assert.equal(options.body.version, 3); return { ok: true, status: status === 'running' ? 'cancelling' : 'deleted' }; }
     if (method === 'POST') {
-      if (url.endsWith('/stop')) { assert.equal(options.body.version, 3); return { ok: true, status: 'cancelling' }; }
+      if (url.endsWith('/stop')) { assert.equal(options.body.version, 3); return { ok: true, status: immediateStop ? 'interrupted' : 'cancelling' }; }
       if (url.endsWith('/continue')) assert.equal(options.body.version, 3);
       if (url === '/api/tasks') {
         bodies.push(options.body);
@@ -128,8 +128,11 @@ async function testTaskPanel(labels) {
   assert.ok(page.calls.some((call) => call.url === '/api/tasks/task-1/files/file-1' && call.method === 'DELETE'));
   status = 'running'; await page.view.removeTask(task());
   assert.ok(page.calls.some((call) => call.url === '/api/tasks/task-1/stop' && call.method === 'POST'), '停止使用独立接口');
-  assert.equal(page.calls.some((call) => call.url === '/api/tasks/task-1' && call.method === 'DELETE'), false, '运行中停止不发送删除请求');
   assert.equal(page.view.notice.value, '停止请求已提交，完成后可继续任务');
+  immediateStop = true;
+  await page.view.removeTask(task());
+  assert.equal(page.view.notice.value, '任务已中断，可继续任务', '等待任务立即停止不能误报已删除');
+  assert.equal(page.calls.some((call) => call.url === '/api/tasks/task-1' && call.method === 'DELETE'), false, '运行中停止不发送删除请求');
   const before = page.calls.length;
   await page.view.removeFile(task(), file);
   assert.equal(page.calls.length, before, '运行中任务禁止删除文件');
